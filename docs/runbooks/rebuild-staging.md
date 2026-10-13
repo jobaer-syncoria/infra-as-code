@@ -65,6 +65,26 @@ Phase 7, ADR-03 and ADR-09: sealed dump from the transfer volume, Django upgrade
 old-version database into the new code is **not** the approved path until that is rehearsed on staging with a copy of
 the real data.
 
+### 2c. Use a cloud Mongo (Atlas) for Clover instead of the local container (optional)
+By default Clover uses a Mongo container on the server (staging). To point it at a cloud Mongo, such as an Atlas staging
+cluster or, at go-live, the production Atlas:
+```bash
+read -rs CLOVER_DB_URL; export CLOVER_DB_URL        # paste the mongodb+srv://... URL, nothing is shown
+/home/zubayer/infra-as-code/rebuild-staging.sh <server-ip> [key]
+```
+The URL is sent over SSH into a root-only file on the server (`/opt/odoosync-secrets/clover_db_url`), never printed, never
+in git. When that file exists, **no mongo container is started** and clover-node's `DB_URL` is the URL from the file.
+To go back to the local container, delete that file and rerun.
+
+clover-node refuses to start if the database host equals the production Atlas host while the environment is not
+`production` (and the reverse). So at go-live pass both settings (the host name only, no password):
+```bash
+ANSIBLE_ARGS='-e clover_deploy_env=production -e clover_production_db_host=<production-atlas-host>' ./rebuild-staging.sh ...
+```
+and set `clover_production_db_host` in staging too, so a mistake there is refused. Atlas must also allow the server's IP in
+its access list (the Atlas owner does that; the runbook keeps today's production IP). Never point a staging server at the
+production Atlas without the Atlas owner's approval.
+
 ### 3. Type two passwords when asked
 Near the start it asks for a password for the **omnisync admin** (user `stgadmin`) and one for the **Clover Cloud admin**
 (user `admin`). Press Enter to skip either; typing shows nothing. They are used once and are not saved anywhere else.

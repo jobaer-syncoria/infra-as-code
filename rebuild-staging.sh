@@ -3,6 +3,9 @@
 #   ./rebuild-staging.sh <server-ip> [path-to-ssh-private-key]
 # It packs the three app repos, copies them and this repo to the server, and runs the Ansible rebuild there.
 # Optional: DB_DUMP=/path/to/omnisync.dump ./rebuild-staging.sh <ip>   restores that database dump (pg_dump -Fc or plain SQL).
+# Optional: CLOVER_DB_URL='mongodb+srv://...' uses that cloud Mongo (Atlas) instead of the local mongo container. The URL is
+#   sent to the server over SSH and stored in a root-only file; it is never printed or put in the repo.
+# Optional: ANSIBLE_ARGS='-e clover_deploy_env=production -e clover_production_db_host=<atlas-host>' passes extra settings.
 # You are asked for two passwords at the end of the start-up (omnisync admin, Clover Cloud admin); Enter skips one.
 set -euo pipefail
 IP="${1:?usage: ./rebuild-staging.sh <server-ip> [ssh-key]}"
@@ -31,5 +34,11 @@ if [ -n "${DB_DUMP:-}" ]; then
   ssh "${SSH_OPTS[@]}" "$R" 'cat > /opt/odoosync-restore/omnisync.dump && chmod 600 /opt/odoosync-restore/omnisync.dump' < "$DB_DUMP"
 fi
 
+if [ -n "${CLOVER_DB_URL:-}" ]; then
+  echo "== 3c/4 upload the Clover database URL (not shown)"
+  ssh "${SSH_OPTS[@]}" "$R" 'mkdir -p /opt/odoosync-secrets && chmod 700 /opt/odoosync-secrets'
+  printf '%s' "$CLOVER_DB_URL" | ssh "${SSH_OPTS[@]}" "$R" 'cat > /opt/odoosync-secrets/clover_db_url && chmod 600 /opt/odoosync-secrets/clover_db_url'
+fi
+
 echo "== 4/4 run the rebuild on the server (the first run takes about 15 to 25 minutes)"
-exec ssh -t "${SSH_OPTS[@]}" "$R" 'bash /root/odoosync-infra/scripts/rebuild-staging.sh'
+exec ssh -t "${SSH_OPTS[@]}" "$R" "bash /root/odoosync-infra/scripts/rebuild-staging.sh ${ANSIBLE_ARGS:-}"

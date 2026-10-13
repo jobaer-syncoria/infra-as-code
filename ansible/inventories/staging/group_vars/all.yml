@@ -55,3 +55,13 @@ omnisync_admin_email: admin@staging.test
 # DB_DUMP=/path/to/file. Works for pg_dump custom format (-Fc) and plain SQL. Go-live: point DB_DUMP at the production dump.
 db_restore_file: /opt/odoosync-restore/omnisync.dump
 db_restore_exit_on_error: true
+
+# --- Clover database: local Mongo container (staging default) or a cloud Mongo such as Atlas (ADR-10) ------------------
+# If the file below exists on the server, clover-node uses the URL inside it and NO local mongo container is started.
+# The URL holds a password, so it is never in this repo: the PC script uploads it when you set CLOVER_DB_URL=...
+clover_db_url_file: /opt/odoosync-secrets/clover_db_url
+# CLOVER_DEPLOY_ENV: production | staging | rehearsal | test. clover-node refuses to start when the database host equals
+# clover_production_db_host while this is not production (and the reverse). Production: set production + the Atlas host.
+clover_deploy_env: staging
+# The production Atlas HOST NAME only (not a secret, no scheme, no password). Set it in every environment to arm the guard.
+clover_production_db_host: ""

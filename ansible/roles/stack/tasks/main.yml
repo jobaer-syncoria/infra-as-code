@@ -7,32 +7,8 @@
     group: "{{ deploy_user }}"
     mode: "0750"
 
-- name: Are the secret env files already there (a rerun keeps them)
-  ansible.builtin.stat:
-    path: "{{ stack_dir }}/infra.env"
-  register: stack_envfile
-
-- name: Make new secrets, only on the first run. They are written to the env files and nowhere else.
-  ansible.builtin.set_fact:
-    stack_pg_password: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
-    stack_rabbit_password: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
-    stack_mongo_password: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
-    stack_django_secret: "{{ lookup('ansible.builtin.password', '/dev/null length=64 chars=ascii_letters,digits') }}"
-    stack_clover_token_secret: "{{ lookup('ansible.builtin.password', '/dev/null length=64 chars=ascii_letters,digits') }}"
-  when: not stack_envfile.stat.exists
-  no_log: true
-
-- name: Env files (created once, never overwritten, mode 0600)
-  ansible.builtin.template:
-    src: "{{ item }}.j2"
-    dest: "{{ stack_dir }}/{{ item }}"
-    owner: "{{ deploy_user }}"
-    group: "{{ deploy_user }}"
-    mode: "0600"
-    force: false
-  loop: [infra.env, omnisync.env, mongo.env, clover.env]
-  when: not stack_envfile.stat.exists
-  no_log: true
+- name: Secrets and env files
+  ansible.builtin.include_tasks: env.yml
 
 - name: Compose file and nginx config (re-rendered every run)
   ansible.builtin.template:
