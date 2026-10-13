@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""Compare every pin found in the repo with the `pins` block of VERSIONS.md (INFRA-CI-06).
+Passes on an empty repo. Fails when a pinned thing appears with another value, or when VERSIONS.md
+lacks its pins block. Usage: scripts/check-versions [repo-root]"""
+import os, re, sys
+
+root = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), ".."))
+try:
+    text = open(os.path.join(root, "VERSIONS.md"), encoding="utf-8").read()
+except OSError:
+    print("FAIL: VERSIONS.md is missing"); sys.exit(1)
+m = re.search(r"```pins\n(.*?)```", text, re.S)
+if not m:
+    print("FAIL: VERSIONS.md has no ```pins block"); sys.exit(1)
+pins = dict(l.split("=", 1) for l in m.group(1).splitlines() if "=" in l)
+
+RULES = [
+    ("UBUNTU_SLUG",        r"\bubuntu-\d\d-\d\d-x64\b",                                   None),
+    ("TERRAFORM_REQUIRED", r"required_version\s*=\s*\"([^\"]+)\"",                        1),
+    ("DO_PROVIDER",        r"source\s*=\s*\"digitalocean/digitalocean\"\s*version\s*=\s*\"([^\"]+)\"", 1),
+    ("NGINX_IMAGE",        r"(?<![\w/-])nginx:(\d+\.\d+\.\d+)-alpine",                    1),
+    ("RABBITMQ_IMAGE",     r"\brabbitmq:(\d+\.\d+)(?:\.\d+)?-management",                 1),
+    ("PYTHON_IMAGE",       r"\bpython:(3\.\d+\.\d+)-slim-trixie",                         1),
+    ("POSTGRES_BASE",      r"(?<![\w/-])postgres:(\d+)-trixie",                           1),
+    ("NODE_IMAGE",         r"(?<![\w/-])node:(\d+)-trixie-slim",                          1),
+    ("FLUENT_BIT",         r"fluent/fluent-bit:(\d+\.\d+)",                               1),
+]
+SKIP_DIRS = {".git", ".terraform", "node_modules", "tests"}
+SKIP_FILES = {"VERSIONS.md", "check-versions"}
+bad, seen = [], 0
+for d, dirs, files in os.walk(root):
+    dirs[:] = [x for x in dirs if x not in SKIP_DIRS and not (x == "tests" and "ci" in d)]
+    if os.path.relpath(d, root).startswith(os.path.join("ci", "tests")):
+        continue
+    for f in files:
+        if f in SKIP_FILES or f.endswith((".png", ".gz", ".lock.hcl", ".asc")):
+            continue
+        p = os.path.join(d, f)
+        try:
+            body = open(p, encoding="utf-8").read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for key, rx, grp in RULES:
+            if key not in pins:
+                continue
+            for mm in re.finditer(rx, body):
+                got = mm.group(grp) if grp else mm.group(0)
+                seen += 1
+                if got != pins[key]:
+                    bad.append(f"{os.path.relpath(p, root)}: {key} is {got!r}, VERSIONS.md pins {pins[key]!r}")
+for b in bad:
+    print("FAIL:", b)
+print(f"check-versions: {seen} pin occurrence(s) checked, {len(bad)} mismatch(es)")
+sys.exit(1 if bad else 0)

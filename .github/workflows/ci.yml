@@ -1,0 +1,128 @@
+# Infra repo CI (ADR-08 3.9, runbook PI.2). Holds no secret, never runs terraform plan or apply.
+# Every job passes on an empty tree: each step is skipped when its input directory has no files yet.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [production]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # INFRA-CI-01 Terraform: fmt, validate (no backend), tflint, trivy config, lifecycle policy
+  terraform:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: pip install pyyaml==6.0.2
+      - name: Policy check (prevent_destroy, ignore_changes, no managed DB, no attachments)
+        run: python3 ci/check_terraform_policy.py
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "~> 1.16" }
+      - name: fmt and validate
+        run: |
+          terraform fmt -check -recursive terraform
+          for d in $(find terraform -name '*.tf' -printf '%h\n' | sort -u); do
+            echo "== validate $d"
+            (cd "$d" && terraform init -backend=false -input=false >/dev/null && terraform validate)
+          done
+      - uses: terraform-linters/setup-tflint@v4
+      - name: tflint
+        run: |
+          [ -n "$(find terraform -name '*.tf' -print -quit)" ] || { echo "no terraform yet"; exit 0; }
+          tflint --recursive
+      - name: trivy config
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+  # INFRA-CI-02 Ansible: ansible-lint, molecule on ubuntu:24.04
+  ansible:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - name: ansible-lint and molecule
+        run: |
+          if [ -z "$(find ansible -name '*.yml' -print -quit)" ]; then echo "no ansible yet"; exit 0; fi
+          pip install "ansible-core~=2.21.0" ansible-lint molecule molecule-plugins[docker]
+          ansible-galaxy collection install -r ansible/requirements.yml
+          ansible-lint ansible
+          for r in ansible/roles/*/molecule; do [ -d "$r" ] && (cd "$(dirname "$r")" && molecule test); done || true
+
+  # INFRA-CI-03 Shell: shellcheck and bats (INFRA-DEP-05 trust cases arrive with PI.5)
+  shell:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: shellcheck
+        run: |
+          files=$(grep -rIl --exclude-dir=.git -E '^#!.*(ba)?sh' scripts ci cloud-init 2>/dev/null || true)
+          [ -z "$files" ] || shellcheck $files
+      - name: bats
+        run: |
+          [ -n "$(find scripts -name '*.bats' -print -quit 2>/dev/null)" ] || { echo "no bats tests yet"; exit 0; }
+          sudo apt-get install -y bats
+          bats -r scripts
+
+  # INFRA-CI-04 Compose and nginx: config -q with dummy env files, nginx -t per variant with dummy certs
+  compose-nginx:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: docker compose config -q (dummy env files)
+        run: |
+          [ -f compose/compose.yml ] || { echo "no compose yet"; exit 0; }
+          docker compose -f compose/compose.yml config -q
+      - name: nginx -t for every variant
+        run: |
+          [ -f nginx/nginx.conf ] || { echo "no nginx yet"; exit 0; }
+          echo "nginx -t per variant arrives with PI.4 (image nginx:1.30.5-alpine, dummy certificates)"
+
+  # INFRA-CI-05 Invariants and ADR-11 checks
+  invariants:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: pip install pyyaml==6.0.2
+      - name: Self-test of the checks (they must fail on bad input)
+        run: bash ci/tests/run.sh
+      - name: No project-wide compose up, no literal stop timeout (ADR-04 C-04-05, in part)
+        run: python3 ci/check_compose_invariants.py
+      - name: INFRA-PG-11-01/02 (5432, pg_hba) and the one-base-digest check
+        run: python3 ci/check_postgres.py
+      - name: Backup, base-backup and patch windows never overlap
+        run: python3 ci/check_windows.py
+      - name: Checks still to implement (not yet present, each named here so none is forgotten)
+        run: |
+          echo "TODO ADR-04 C-04-05 symbols check; ADR-05 UT-CUT-01 (N files); ADR-01 UT-RT-01;"
+          echo "TODO ADR-08 3.8 trusted-proxy name check (ADR-10 3.7 withdrew CLOVER_COMPAT_*)."
+
+  # INFRA-CI-06 Version matrix
+  versions:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: python3 scripts/check-versions
+
+  # INFRA-CI-07 Secrets scan
+  gitleaks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - name: gitleaks (whole history, no network)
+        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.24.3 detect --source /repo --redact --no-banner
