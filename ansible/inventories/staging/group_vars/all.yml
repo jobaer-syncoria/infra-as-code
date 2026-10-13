@@ -12,7 +12,7 @@ public_host: ""
 public_host_eff: "{{ public_host if public_host else ansible_facts['default_ipv4']['address'] }}"
 
 # --- base ------------------------------------------------------------------------------------------------------
-base_packages: [ca-certificates, curl, git, gnupg, jq, ufw, fail2ban, unattended-upgrades, python3-venv, python3-debian, acl, rsync, htop]
+base_packages: [ca-certificates, curl, git, gnupg, jq, ufw, fail2ban, unattended-upgrades, python3-venv, python3-debian, python3-systemd, acl, rsync, htop]
 swap_size: 2G
 
 # --- docker (VERSIONS.md rows 3, 4; staging runs 29.9.0 / compose 5.6.0 today) ------------------------------------
