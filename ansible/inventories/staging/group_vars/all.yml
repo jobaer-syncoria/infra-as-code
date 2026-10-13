@@ -48,3 +48,10 @@ img_mongo: mongo:6
 img_socat: alpine/socat
 omnisync_admin_user: stgadmin
 omnisync_admin_email: admin@staging.test
+
+# --- database restore (optional) -----------------------------------------------------------------------------------
+# If this file exists on the server and the database has not been restored yet, it is restored into the omnisync
+# PostgreSQL before the web container starts (which then runs `migrate` on top). The PC script uploads it when you set
+# DB_DUMP=/path/to/file. Works for pg_dump custom format (-Fc) and plain SQL. Go-live: point DB_DUMP at the production dump.
+db_restore_file: /opt/odoosync-restore/omnisync.dump
+db_restore_exit_on_error: true

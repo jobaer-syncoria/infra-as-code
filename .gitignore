@@ -9,3 +9,6 @@ __pycache__/
 .env
 ansible/collections/
 bundles/
+restore/
+*.dump
+*.sql

@@ -43,6 +43,28 @@ It does four things by itself: forgets the old host key, packs the three app rep
 this repo to the server, and starts the Ansible run on the server. The first run takes about **15 to 25 minutes**
 (most of it is building the images).
 
+### 2b. Restore a database backup (optional)
+To start from an existing omnisync database instead of an empty one, pass the dump file:
+```bash
+DB_DUMP=/home/zubayer/staging-backup/omnisync-20261013-1827.dump /home/zubayer/infra-as-code/rebuild-staging.sh <server-ip> [key]
+```
+The script uploads it, and Ansible restores it into PostgreSQL **before** the web container starts. The web container then
+runs `migrate` on top, so a dump from an older code version is brought up to date. Works for `pg_dump -Fc` (custom) and
+plain SQL dumps. A rerun does not restore again (the file `~/apps/stack/.db-restored` marks it done; delete that file to
+restore again, which **overwrites** the database). When the dump already contains your admin users, the passwords you type
+at step 3 for existing users are ignored (the user is kept as restored).
+
+**Make a staging backup any time:**
+```bash
+ssh syncoria-dev@<server-ip> 'cd ~/apps/stack && docker compose -p omnisync-stg exec -T postgres pg_dump -U omnisync -Fc omnisync' > omnisync-$(date +%Y%m%d-%H%M).dump
+```
+Dumps hold real data and password hashes: keep them out of git (`*.dump` is in `.gitignore`) and out of chat.
+
+**Go-live:** use the production dump instead (`DB_DUMP=<production dump>`). Production has its own procedure (runbook
+Phase 7, ADR-03 and ADR-09: sealed dump from the transfer volume, Django upgrade hops from 3.2 to 5.2). A raw restore of an
+old-version database into the new code is **not** the approved path until that is rehearsed on staging with a copy of
+the real data.
+
 ### 3. Type two passwords when asked
 Near the start it asks for a password for the **omnisync admin** (user `stgadmin`) and one for the **Clover Cloud admin**
 (user `admin`). Press Enter to skip either; typing shows nothing. They are used once and are not saved anywhere else.
