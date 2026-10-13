@@ -9,7 +9,7 @@
 # Optional: CLOVER_DB_URL='mongodb+srv://...'      use that cloud Mongo (Atlas) instead of the local mongo container. The URL is
 #           sent over SSH into a 0600 file on the server; it is never printed or put in the repo.
 # Optional: ANSIBLE_ARGS='-e clover_deploy_env=production -e clover_production_db_host=<atlas-host>'   extra Ansible settings
-# You are asked for two passwords when Ansible starts (omnisync admin, Clover Cloud admin); Enter skips one.
+# Ansible asks for an omnisync admin and a Clover admin password only when there is nothing to restore (no DB_DUMP / no CLOVER_DB_URL).
 set -euo pipefail
 IP="${1:?usage: ./rebuild-staging.sh <server-ip> [ssh-key]}"
 KEY="${2:-}"
@@ -22,6 +22,10 @@ if [ "$USER_" = root ]; then BASE=/root; ASUDO=""; BUNDLES=/opt/odoosync-bundles
 else BASE="/home/$USER_"; ASUDO="sudo "; BUNDLES="$BASE/odoosync-bundles"; RESTORE="$BASE/odoosync-restore"; SECRETS="$BASE/odoosync-secrets"; fi
 INFRA="$BASE/odoosync-infra"
 EXTRA="-e code_bundle_dir=$BUNDLES -e db_restore_file=$RESTORE/omnisync.dump -e clover_db_url_file=$SECRETS/clover_db_url"
+# The admin-password prompts only make sense on empty databases: a restored dump already holds its users, and a cloud Mongo
+# already holds Clover's. Passing the variables (empty) tells Ansible not to ask.
+[ -z "${DB_DUMP:-}" ] || EXTRA="$EXTRA -e omnisync_admin_password="
+[ -z "${CLOVER_DB_URL:-}" ] || EXTRA="$EXTRA -e clover_admin_password="
 
 echo "== 1/4 forget the old host key (a rebuilt server has a new one)"
 ssh-keygen -R "$IP" >/dev/null 2>&1 || true

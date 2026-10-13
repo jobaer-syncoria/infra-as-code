@@ -85,9 +85,10 @@ and set `clover_production_db_host` in staging too, so a mistake there is refuse
 its access list (the Atlas owner does that; the runbook keeps today's production IP). Never point a staging server at the
 production Atlas without the Atlas owner's approval.
 
-### 3. Type two passwords when asked
-Near the start it asks for a password for the **omnisync admin** (user `stgadmin`) and one for the **Clover Cloud admin**
-(user `admin`). Press Enter to skip either; typing shows nothing. They are used once and are not saved anywhere else.
+### 3. Admin passwords (only when there is nothing to restore)
+With `DB_DUMP` the omnisync users come from the dump, and with `CLOVER_DB_URL` Clover's users live in the cloud Mongo, so
+the script asks for neither. Without them Ansible asks for an omnisync admin password (user `stgadmin`) and a Clover Cloud
+admin password (user `admin`); Enter skips one, and typing shows nothing. They are used once and are not saved elsewhere.
 
 ### 4. Check the result
 The run ends with a summary of the URLs and the container list. Then:
