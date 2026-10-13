@@ -21,16 +21,18 @@
     path: "{{ code_bundle_dir }}/{{ item.bundle }}"
   loop: "{{ code_repos }}"
   loop_control: {label: "{{ item.bundle }}"}
-  register: bundles
+  register: code_bundles
 
 - name: Stop if a bundle is missing
   ansible.builtin.assert:
     that: item.stat.exists
-    fail_msg: "{{ code_bundle_dir }}/{{ item.item.bundle }} is missing. Run scripts/make-bundles.sh on your PC and copy the files (docs/runbooks/rebuild-staging.md)."
-  loop: "{{ bundles.results }}"
+    fail_msg: >-
+      {{ code_bundle_dir }}/{{ item.item.bundle }} is missing. Run scripts/make-bundles.sh on your PC
+      and copy the files (docs/runbooks/rebuild-staging.md).
+  loop: "{{ code_bundles.results }}"
   loop_control: {label: "{{ item.item.bundle }}"}
 
-- name: Clone each repo from its bundle (first run only)
+- name: Clone each repo from its bundle (first run only)  # noqa: command-instead-of-module
   ansible.builtin.command:
     cmd: "git clone --quiet --branch {{ item.branch }} {{ code_bundle_dir }}/{{ item.bundle }} {{ apps_dir }}/{{ item.name }}"
     creates: "{{ apps_dir }}/{{ item.name }}/.git"

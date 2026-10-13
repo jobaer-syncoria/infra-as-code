@@ -191,17 +191,17 @@ w compose/x.yml <<'X'
 image: nginx:1.28.0-alpine
 X
 if python3 "$CI/../scripts/check-versions" "$T" >/dev/null 2>&1; then r=pass; else r=fail; fi
-[ "$r" = fail ] && { pass=$((pass+1)); echo "ok    version mismatch is caught"; } || { fail=$((fail+1)); echo "FAIL  version mismatch is caught"; }
+if [ "$r" = fail ]; then pass=$((pass+1)); echo "ok    version mismatch is caught"; else fail=$((fail+1)); echo "FAIL  version mismatch is caught"; fi
 w compose/x.yml <<'X'
 image: nginx:1.30.5-alpine
 X
 if python3 "$CI/../scripts/check-versions" "$T" >/dev/null 2>&1; then r=pass; else r=fail; fi
-[ "$r" = pass ] && { pass=$((pass+1)); echo "ok    matching version passes"; } || { fail=$((fail+1)); echo "FAIL  matching version passes"; }
+if [ "$r" = pass ]; then pass=$((pass+1)); echo "ok    matching version passes"; else fail=$((fail+1)); echo "FAIL  matching version passes"; fi
 w terraform/m.tf <<'X'
 terraform { required_version = "~> 1.15" }
 X
 if python3 "$CI/../scripts/check-versions" "$T" >/dev/null 2>&1; then r=pass; else r=fail; fi
-[ "$r" = fail ] && { pass=$((pass+1)); echo "ok    wrong terraform required_version is caught"; } || { fail=$((fail+1)); echo "FAIL  wrong terraform required_version is caught"; }
+if [ "$r" = fail ]; then pass=$((pass+1)); echo "ok    wrong terraform required_version is caught"; else fail=$((fail+1)); echo "FAIL  wrong terraform required_version is caught"; fi
 
 echo "ci checks self-test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

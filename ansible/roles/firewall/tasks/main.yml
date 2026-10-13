@@ -1,7 +1,7 @@
 ---
-- name: ufw default deny incoming
+- name: UFW default deny incoming
   community.general.ufw: {default: deny, direction: incoming}
-- name: ufw default allow outgoing
+- name: UFW default allow outgoing
   community.general.ufw: {default: allow, direction: outgoing}
 - name: Allow the public ports
   community.general.ufw:
@@ -9,5 +9,5 @@
     port: "{{ item | string }}"
     proto: tcp
   loop: "{{ ufw_allow_tcp + ([clover_ui_port] if expose_clover_ui else []) }}"
-- name: ufw on
+- name: UFW on
   community.general.ufw: {state: enabled}

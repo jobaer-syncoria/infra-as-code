@@ -10,16 +10,16 @@
 - name: Are the secret env files already there (a rerun keeps them)
   ansible.builtin.stat:
     path: "{{ stack_dir }}/infra.env"
-  register: envfile
+  register: stack_envfile
 
 - name: Make new secrets, only on the first run. They are written to the env files and nowhere else.
   ansible.builtin.set_fact:
-    pg_password: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
-    rabbit_password: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
-    mongo_password: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
-    django_secret: "{{ lookup('ansible.builtin.password', '/dev/null length=64 chars=ascii_letters,digits') }}"
-    clover_token_secret: "{{ lookup('ansible.builtin.password', '/dev/null length=64 chars=ascii_letters,digits') }}"
-  when: not envfile.stat.exists
+    stack_pg_password: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+    stack_rabbit_password: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+    stack_mongo_password: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+    stack_django_secret: "{{ lookup('ansible.builtin.password', '/dev/null length=64 chars=ascii_letters,digits') }}"
+    stack_clover_token_secret: "{{ lookup('ansible.builtin.password', '/dev/null length=64 chars=ascii_letters,digits') }}"
+  when: not stack_envfile.stat.exists
   no_log: true
 
 - name: Env files (created once, never overwritten, mode 0600)
@@ -31,7 +31,7 @@
     mode: "0600"
     force: false
   loop: [infra.env, omnisync.env, mongo.env, clover.env]
-  when: not envfile.stat.exists
+  when: not stack_envfile.stat.exists
   no_log: true
 
 - name: Compose file and nginx config (re-rendered every run)
@@ -50,8 +50,8 @@
     chdir: "{{ stack_dir }}"
   become: true
   become_user: "{{ deploy_user }}"
-  register: compose_up
-  changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr or 'Created' in compose_up.stderr"
+  register: stack_compose_up
+  changed_when: "'Started' in stack_compose_up.stderr or 'Recreated' in stack_compose_up.stderr or 'Created' in stack_compose_up.stderr"
   async: 3000
   poll: 15
 
@@ -59,7 +59,7 @@
   ansible.builtin.uri:
     url: http://127.0.0.1:8000/
     status_code: [200, 301, 302, 400, 401, 403, 404]
-  register: api_up
-  until: api_up.status is defined
+  register: stack_api_up
+  until: stack_api_up.status is defined
   retries: 40
   delay: 6

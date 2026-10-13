@@ -27,12 +27,12 @@
 - name: Does the deploy user already have keys
   ansible.builtin.stat:
     path: "/home/{{ deploy_user }}/.ssh/authorized_keys"
-  register: deploy_keys
+  register: deploy_user_keys
 
 - name: Root's keys (the key you gave DigitalOcean at rebuild)
   ansible.builtin.stat:
     path: /root/.ssh/authorized_keys
-  register: root_keys
+  register: deploy_user_root_keys
 
 - name: Give the deploy user the same keys, once. No key text is ever in this repo.
   ansible.builtin.copy:
@@ -42,18 +42,18 @@
     owner: "{{ deploy_user }}"
     group: "{{ deploy_user }}"
     mode: "0600"
-  when: not deploy_keys.stat.exists and root_keys.stat.exists
+  when: not deploy_user_keys.stat.exists and deploy_user_root_keys.stat.exists
 
 - name: Is the deploy user's key file now there and not empty
   ansible.builtin.stat:
     path: "/home/{{ deploy_user }}/.ssh/authorized_keys"
-  register: deploy_keys_after
+  register: deploy_user_keys_after
 
 - name: Refuse to go on without a key (SSH hardening next would lock you out)
   ansible.builtin.assert:
     that:
-      - deploy_keys_after.stat.exists
-      - deploy_keys_after.stat.size > 0
+      - deploy_user_keys_after.stat.exists
+      - deploy_user_keys_after.stat.size > 0
     fail_msg: >-
       {{ deploy_user }} has no SSH key. Add your public key to /home/{{ deploy_user }}/.ssh/authorized_keys,
       or rebuild the droplet with your key selected in the DigitalOcean console, then run again.

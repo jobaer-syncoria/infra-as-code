@@ -14,25 +14,25 @@
         owner: root
         group: root
         mode: "0644"
-      register: ssh_dropin
-    - name: sshd accepts the whole configuration
+      register: ssh_hardening_dropin
+    - name: Check that sshd accepts the whole configuration
       ansible.builtin.command: sshd -t
       changed_when: false
-    - name: Reload sshd (reload, never restart, so open sessions stay)
+    - name: Reload sshd (reload, never restart, so open sessions stay)  # noqa: no-handler
       ansible.builtin.service: {name: ssh, state: reloaded}
-      when: ssh_dropin.changed
+      when: ssh_hardening_dropin.changed
     - name: What sshd really uses now
       ansible.builtin.command: sshd -T
-      register: sshd_effective
+      register: ssh_hardening_effective
       changed_when: false
       when: not ansible_check_mode
     - name: Passwords off and root login as asked
       when: not ansible_check_mode
       ansible.builtin.assert:
         that:
-          - "'passwordauthentication no' in sshd_effective.stdout"
-          - "('permitrootlogin ' ~ ssh_permit_root_login) in sshd_effective.stdout"
-          - "'pubkeyauthentication yes' in sshd_effective.stdout"
+          - "'passwordauthentication no' in ssh_hardening_effective.stdout"
+          - "('permitrootlogin ' ~ ssh_permit_root_login) in ssh_hardening_effective.stdout"
+          - "'pubkeyauthentication yes' in ssh_hardening_effective.stdout"
   rescue:
     - name: Something is off, so remove the drop-in again
       ansible.builtin.file: {path: /etc/ssh/sshd_config.d/00-hardening.conf, state: absent}

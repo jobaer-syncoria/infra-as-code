@@ -55,8 +55,8 @@ jobs:
         run: |
           if [ -z "$(find ansible -name '*.yml' -print -quit)" ]; then echo "no ansible yet"; exit 0; fi
           pip install "ansible-core~=2.21.0" ansible-lint molecule molecule-plugins[docker]
-          ansible-galaxy collection install -r ansible/requirements.yml
-          ansible-lint ansible
+          ansible-galaxy collection install -r ansible/requirements.yml -p ansible/collections
+          (cd ansible && ANSIBLE_COLLECTIONS_PATH=./collections ansible-lint .)
           for r in ansible/roles/*/molecule; do [ -d "$r" ] && (cd "$(dirname "$r")" && molecule test); done || true
 
   # INFRA-CI-03 Shell: shellcheck and bats (INFRA-DEP-05 trust cases arrive with PI.5)

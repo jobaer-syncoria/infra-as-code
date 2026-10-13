@@ -36,9 +36,9 @@ fail2ban_bantime: 1h
 # make-bundles.sh on your PC creates the files; copy them to code_bundle_dir on the server (see docs/runbooks/rebuild-staging.md)
 code_bundle_dir: /opt/odoosync-bundles
 code_repos:
-  - {name: omnisync-py312,           bundle: omnisync.bundle, branch: ci/omnisync-image-contract}
-  - {name: syncoria-connector-admin, bundle: admin.bundle,    branch: ci/admin-release}
-  - {name: odoo-clover-cloud,        bundle: clover.bundle,   branch: fix/ns-outbound-and-broken}
+  - {name: omnisync-py312, bundle: omnisync.bundle, branch: ci/omnisync-image-contract}
+  - {name: syncoria-connector-admin, bundle: admin.bundle, branch: ci/admin-release}
+  - {name: odoo-clover-cloud, bundle: clover.bundle, branch: fix/ns-outbound-and-broken}
 
 # --- the stack (matches the running staging; matrix pins arrive with PI.4) -----------------------------------------
 img_postgres: postgres:17

@@ -26,10 +26,10 @@
 - name: Is the swap file there
   ansible.builtin.stat:
     path: /swapfile
-  register: swapfile
+  register: base_swapfile
 
 - name: Create the swap file (image builds need the memory)
-  when: not swapfile.stat.exists
+  when: not base_swapfile.stat.exists
   block:
     - name: Allocate it
       ansible.builtin.command: "fallocate -l {{ swap_size }} /swapfile"
@@ -49,5 +49,9 @@
     state: present
 
 - name: Turn swap on if it is not
-  ansible.builtin.shell: "swapon --show=NAME --noheadings | grep -qx /swapfile || swapon /swapfile"
+  ansible.builtin.shell: |
+    set -o pipefail
+    swapon --show=NAME --noheadings | grep -qx /swapfile || swapon /swapfile
+  args:
+    executable: /bin/bash
   changed_when: false
