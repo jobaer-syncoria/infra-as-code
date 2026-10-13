@@ -1,0 +1,27 @@
+---
+- name: The admin site answers through nginx
+  ansible.builtin.uri: {url: "http://127.0.0.1/", status_code: 200}
+- name: The Clover Cloud page answers
+  ansible.builtin.uri: {url: "http://127.0.0.1:{{ clover_ui_port }}/", status_code: 200}
+- name: omnisync answers through nginx under /api/
+  ansible.builtin.uri: {url: "http://127.0.0.1/api/", status_code: [200, 301, 302, 400, 401, 403, 404]}
+- name: Container list
+  ansible.builtin.command:
+    cmd: "docker compose -p {{ compose_project }} ps --format '{{ '{{.Service}} {{.State}}' }}'"
+    chdir: "{{ stack_dir }}"
+  become: true
+  become_user: "{{ deploy_user }}"
+  register: ps
+  changed_when: false
+- name: Every service is running
+  ansible.builtin.assert:
+    that:
+      - ps.stdout_lines | length >= 9
+      - ps.stdout_lines | select('search', 'running') | list | length == ps.stdout_lines | length
+    fail_msg: "Not every container is running: {{ ps.stdout_lines }}"
+- name: Show the result
+  ansible.builtin.debug:
+    msg:
+      - "omnisync admin:  http://{{ public_host_eff }}/"
+      - "Clover Cloud:    http://{{ public_host_eff }}:{{ clover_ui_port }}/"
+      - "Containers:      {{ ps.stdout_lines }}"

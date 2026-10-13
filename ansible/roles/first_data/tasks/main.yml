@@ -1,0 +1,43 @@
+---
+# Creates the two admin logins, once, only when you typed a password at the prompt. Passwords go through the
+# environment of the command (never on its command line, never in a file) and are not printed.
+- name: omnisync admin user
+  ansible.builtin.shell: |
+    docker compose -p {{ compose_project }} exec -T -e ADMIN_PW web python manage.py shell -c "
+    import os
+    from django.contrib.auth import get_user_model
+    U = get_user_model()
+    u, made = U.objects.get_or_create(username='{{ omnisync_admin_user }}', defaults={'email': '{{ omnisync_admin_email }}'})
+    u.is_staff = True; u.is_superuser = True
+    if made: u.set_password(os.environ['ADMIN_PW'])
+    u.save(); print('created' if made else 'exists')"
+  args:
+    chdir: "{{ stack_dir }}"
+  become: true
+  become_user: "{{ deploy_user }}"
+  environment:
+    ADMIN_PW: "{{ omnisync_admin_password }}"
+  register: omnisync_admin
+  changed_when: "'created' in omnisync_admin.stdout"
+  no_log: true
+  when: omnisync_admin_password | default('') | length > 0
+
+- name: Clover Cloud admin user
+  ansible.builtin.shell: |
+    docker compose -p {{ compose_project }} exec -T -e CLOVER_PW clover-node node -e '
+    const m=require("mongoose");const User=require("./app/models/user.model.js");
+    m.connect(process.env.DB_URL).then(async()=>{
+      let u=await User.findOne({userName:"admin"}); const made=!u;
+      if(made) u=new User({firstName:"Stg",lastName:"Admin",userName:"admin",email:"admin@staging.test"});
+      if(made) u.password=process.env.CLOVER_PW;
+      u.isAdmin=true; await u.save(); console.log(made?"created":"exists"); process.exit(0)})'
+  args:
+    chdir: "{{ stack_dir }}"
+  become: true
+  become_user: "{{ deploy_user }}"
+  environment:
+    CLOVER_PW: "{{ clover_admin_password }}"
+  register: clover_admin
+  changed_when: "'created' in clover_admin.stdout"
+  no_log: true
+  when: clover_admin_password | default('') | length > 0

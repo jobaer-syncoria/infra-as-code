@@ -1,0 +1,53 @@
+---
+- name: Refresh the apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ base_packages }}"
+    state: present
+
+- name: Unattended security upgrades on
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+
+- name: Timezone UTC
+  community.general.timezone:
+    name: Etc/UTC
+
+- name: Is the swap file there
+  ansible.builtin.stat:
+    path: /swapfile
+  register: swapfile
+
+- name: Create the swap file (image builds need the memory)
+  when: not swapfile.stat.exists
+  block:
+    - name: Allocate it
+      ansible.builtin.command: "fallocate -l {{ swap_size }} /swapfile"
+      changed_when: true
+    - name: Lock its permissions
+      ansible.builtin.file: {path: /swapfile, owner: root, group: root, mode: "0600"}
+    - name: Format it
+      ansible.builtin.command: mkswap /swapfile
+      changed_when: true
+
+- name: Mount the swap file now and at boot
+  ansible.posix.mount:
+    src: /swapfile
+    path: none
+    fstype: swap
+    opts: sw
+    state: present
+
+- name: Turn swap on if it is not
+  ansible.builtin.shell: "swapon --show=NAME --noheadings | grep -qx /swapfile || swapon /swapfile"
+  changed_when: false

@@ -1,0 +1,70 @@
+# Managed by Ansible (role stack). Same services as the hand-built staging stack.
+name: {{ compose_project }}
+services:
+  postgres:
+    image: {{ img_postgres }}
+    restart: unless-stopped
+    env_file: infra.env
+    volumes: [pgdata17:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omnisync -d omnisync"]
+      interval: 5s
+      retries: 10
+  rabbit:
+    image: {{ img_rabbit }}
+    restart: unless-stopped
+    env_file: infra.env
+    hostname: rabbit
+  web:
+    build: ../omnisync-py312
+    image: omnisync-stg:local
+    restart: unless-stopped
+    env_file: omnisync.env
+    # the committed gunicorn config (gthread, 3 x 16, path-only access log); migrate first
+    command: >
+      bash -c "python wait_for_postgres.py && python manage.py migrate --noinput &&
+      exec newrelic-admin run-program gunicorn -c deploy/gunicorn_web.conf.py omnisync.wsgi:application"
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on: {postgres: {condition: service_healthy}, rabbit: {condition: service_started}}
+  worker:
+    image: omnisync-stg:local
+    restart: unless-stopped
+    env_file: omnisync.env
+    command: celery -A omnisync worker -l info
+    depends_on: [web]
+  admin:
+    build:
+      context: ../syncoria-connector-admin
+      args:
+        VITE_API_BASE_URL: http://{{ public_host_eff }}/api
+    image: admin-stg:local
+    restart: unless-stopped
+  edge:
+    image: {{ img_nginx }}
+    restart: unless-stopped
+    volumes: ["./nginx.conf:/etc/nginx/conf.d/default.conf:ro"]
+    ports: ["80:80"]
+    depends_on: [web, admin]
+  mongo:
+    image: {{ img_mongo }}
+    restart: unless-stopped
+    env_file: mongo.env
+    volumes: [mongodata:/data/db]
+  clover-node:
+    build:
+      context: ../odoo-clover-cloud
+    image: clover-node-stg:local
+    restart: unless-stopped
+    env_file: clover.env
+    ports: ["{{ clover_ui_port }}:8081"]
+    depends_on: [mongo]
+  # makes 127.0.0.1:8000 inside clover-node reach omnisync (as on the real host, where it is a loopback listener)
+  sc-bridge:
+    image: {{ img_socat }}
+    restart: unless-stopped
+    network_mode: "service:clover-node"
+    command: TCP-LISTEN:8000,fork,reuseaddr TCP:web:8000
+    depends_on: [clover-node, web]
+volumes:
+  mongodata:
+  pgdata17:

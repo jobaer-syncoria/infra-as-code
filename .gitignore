@@ -7,3 +7,5 @@ __pycache__/
 !*.tfvars.example
 !*.auto.tfvars.example
 .env
+ansible/collections/
+bundles/

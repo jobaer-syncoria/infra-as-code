@@ -1,0 +1,24 @@
+---
+# Rebuild staging from scratch. Run on the server itself as root after a DigitalOcean rebuild (see
+# docs/runbooks/rebuild-staging.md). Safe to run again: every step checks before it changes anything.
+- name: Staging server
+  hosts: staging
+  become: true
+  vars_prompt:
+    - name: omnisync_admin_password
+      prompt: "Password for the omnisync admin user (empty = do not create one)"
+      private: true
+    - name: clover_admin_password
+      prompt: "Password for the Clover Cloud admin user (empty = do not create one)"
+      private: true
+  roles:
+    - base
+    - deploy_user
+    - ssh_hardening
+    - firewall
+    - fail2ban
+    - docker
+    - code
+    - stack
+    - first_data
+    - smoke

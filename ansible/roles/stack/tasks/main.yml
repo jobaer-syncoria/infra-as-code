@@ -1,0 +1,65 @@
+---
+- name: The stack folder
+  ansible.builtin.file:
+    path: "{{ stack_dir }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0750"
+
+- name: Are the secret env files already there (a rerun keeps them)
+  ansible.builtin.stat:
+    path: "{{ stack_dir }}/infra.env"
+  register: envfile
+
+- name: Make new secrets, only on the first run. They are written to the env files and nowhere else.
+  ansible.builtin.set_fact:
+    pg_password: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+    rabbit_password: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+    mongo_password: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+    django_secret: "{{ lookup('ansible.builtin.password', '/dev/null length=64 chars=ascii_letters,digits') }}"
+    clover_token_secret: "{{ lookup('ansible.builtin.password', '/dev/null length=64 chars=ascii_letters,digits') }}"
+  when: not envfile.stat.exists
+  no_log: true
+
+- name: Env files (created once, never overwritten, mode 0600)
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ stack_dir }}/{{ item }}"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0600"
+    force: false
+  loop: [infra.env, omnisync.env, mongo.env, clover.env]
+  when: not envfile.stat.exists
+  no_log: true
+
+- name: Compose file and nginx config (re-rendered every run)
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ stack_dir }}/{{ item }}"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0644"
+  loop: [docker-compose.yml, nginx.conf]
+  register: stack_files
+
+- name: Build and start the stack (several minutes the first time)
+  ansible.builtin.command:
+    cmd: "docker compose -p {{ compose_project }} -f docker-compose.yml up -d --build --remove-orphans"
+    chdir: "{{ stack_dir }}"
+  become: true
+  become_user: "{{ deploy_user }}"
+  register: compose_up
+  changed_when: "'Started' in compose_up.stderr or 'Recreated' in compose_up.stderr or 'Created' in compose_up.stderr"
+  async: 3000
+  poll: 15
+
+- name: Wait until the API answers
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8000/
+    status_code: [200, 301, 302, 400, 401, 403, 404]
+  register: api_up
+  until: api_up.status is defined
+  retries: 40
+  delay: 6
