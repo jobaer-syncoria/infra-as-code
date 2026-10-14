@@ -111,6 +111,8 @@ deploy_policy:
   images: "{{ {deploy_image_repo: {'identity': deploy_signer_identity, 'issuer': deploy_signer_issuer}} }}"
   label_checked: ["{{ deploy_image_repo }}"]
   serving_values_path: /code/deploy/serving_values.json
+  # the superuser of the staging PostgreSQL container (POSTGRES_USER); the production default is postgres
+  pg_user: omnisync
   required_secrets: {}
   deny_repos: {}
   readiness_timeout: 240

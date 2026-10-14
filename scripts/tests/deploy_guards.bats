@@ -100,6 +100,20 @@ refused() { [ "$status" -eq 3 ] && [[ "$output" == *"deploy_refused $1"* ]]; }
   STUB_PGVER=130012 request web "$D1" release/ok
   refused db_version
 }
+@test "DEP-04: the database version is read from the postgres container of THIS project, as the policy's user" {
+  printf 'OMNISYNC_DEPLOY_ENV=staging\nOMNISYNC_COMPOSE_PROJECT=omnisync-stg\n' > "$ETC/env"; chmod 644 "$ETC/env"
+  policy_add '.pg_user = "omnisync"'
+  request web "$D1" release/ok
+  [ "$status" -eq 0 ]
+  grep -q -- 'label=com.docker.compose.project=omnisync-stg' "$STUB_DOCKER_LOG"
+  grep -q -- 'label=com.docker.compose.service=postgres' "$STUB_DOCKER_LOG"
+  grep -q -- 'exec cid-pg psql -U omnisync -d postgres' "$STUB_DOCKER_LOG"
+  ! grep -q -- 'compose -p omnisync exec' "$STUB_DOCKER_LOG"
+}
+@test "DEP-04: no running postgres container means the version cannot be proven, so the deploy is refused" {
+  STUB_NO_PG=1 request web "$D1" release/ok
+  refused db_version
+}
 @test "DEP-04: an unreadable database version is refused" {
   STUB_PGVER=unknown request web "$D1" release/ok
   refused db_version

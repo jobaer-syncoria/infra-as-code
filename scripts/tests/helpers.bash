@@ -94,6 +94,8 @@ case "$1" in
   pull) [ -z "${STUB_PULL_FAIL:-}" ] || exit 1 ;;
   buildx) [ -z "${STUB_REGISTRY_FAIL:-}" ] || exit 1; printf '%s\n' "${STUB_REGISTRY_DIGEST:-}" ;;
   image) printf '%s\n' "$STUB_LABELS" ;;
+  ps) [ -n "${STUB_NO_PG:-}" ] || echo cid-pg ;;
+  exec) printf '%s\n' "$STUB_PGVER" ;;
   run) cat "$STUB_SERVING_FILE" ;;
   inspect)
     case "$*" in

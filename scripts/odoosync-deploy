@@ -131,8 +131,16 @@ cmd_request() {
   fi
   if [ "$service" != postgres ]; then
     need docker
-    local vnum
-    vnum="$(docker compose -p omnisync exec -T postgres psql -U postgres -Atc 'show server_version_num' 2>/dev/null | tr -d '[:space:]' || true)"
+    # the running postgres container, found by its compose labels (no compose file is needed), asked over its local socket
+    local vnum pgproject pguser pgcid
+    pgproject="$(sed -n 's/^OMNISYNC_COMPOSE_PROJECT=//p' "$env_file" | head -n1)"; pgproject="${pgproject:-omnisync}"
+    pguser="$(jq -r '.pg_user // "postgres"' "$policy")"
+    pgcid="$(docker ps -q --filter "label=com.docker.compose.project=${pgproject}" \
+      --filter "label=com.docker.compose.service=postgres" 2>/dev/null | head -n1 || true)"
+    vnum=""
+    if [ -n "$pgcid" ]; then
+      vnum="$(docker exec "$pgcid" psql -U "$pguser" -d postgres -Atc 'show server_version_num' 2>/dev/null | tr -d '[:space:]' || true)"
+    fi
     { [[ "$vnum" =~ ^[0-9]+$ ]] && [ "$vnum" -ge 140000 ]; } || refuse db_version "${vnum:-unknown}"
   fi
 
