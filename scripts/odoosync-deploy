@@ -1,0 +1,345 @@
+#!/usr/bin/env bash
+# odoosync-deploy: root tool that applies ONLY signed changes (ADR-08 3.9).
+#
+# STATUS: slices 1 and 2 of PI.5.
+#   Slice 1: `request` with every guard (checks 1-6 of 3.9), tested in scripts/tests/deploy_guards.bats.
+#   Slice 2: the apply step as a SAFE RECREATE (pull by digest, recreate only that service, health wait, automatic rollback),
+#            `rollback`, `stop`, `flag set|unset DEPLOY_FREEZE`, a deploy lock, the release log, the missing-secret guard, the
+#            image-by-environment guard and the clover-node environment guard. Tested in scripts/tests/deploy_apply.bats.
+#   NOT built: zero-drop blue/green for web and web-terminal, the Clover terminal drain (CCD), other flags, scheduled jobs.
+#   Until they exist, production REFUSES to apply any service on the payment path (apply_needs_bluegreen).
+#
+# Trust model: nothing a non-root user can write is ever read. Two things authorise a change: an image signature proving the
+# image was built by the named repo's release.yml on refs/heads/production, and a git tag signed by a release approver and
+# reachable from the production branch.
+set -Eeuo pipefail
+HERE="$(dirname "$(readlink -f "$0")")"
+# shellcheck source=/dev/null
+. "$HERE/lib/common.sh"
+
+usage() {
+  cat >&2 <<USAGE
+usage: odoosync-deploy request --env /etc/odoosync/env --service <name> --digest sha256:<64 hex> --ref <tag>
+                               [--manual] [--override tier1-baseline] [--check-only]
+       odoosync-deploy rollback --service <name>
+       odoosync-deploy stop <service>
+       odoosync-deploy flag set DEPLOY_FREEZE 1 | flag unset DEPLOY_FREEZE
+USAGE
+  exit 2
+}
+
+SERVICES_RE='^(web|web-terminal|worker|admin-web|edge|rabbitmq|pgbackup|postgres|clover-node)$'
+
+cmd_request() {
+  local env_arg="" service="" digest="" ref="" manual=0 override="" check_only=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --env) env_arg="${2:-}"; shift 2 ;;
+      --service) service="${2:-}"; shift 2 ;;
+      --digest) digest="${2:-}"; shift 2 ;;
+      --ref) ref="${2:-}"; shift 2 ;;
+      --manual) manual=1; shift ;;
+      --override) override="${2:-}"; shift 2 ;;
+      --check-only) check_only=1; shift ;;
+      *) refuse bad_args "unknown_option" ;;
+    esac
+  done
+
+  # ---- 1. arguments match a fixed grammar -----------------------------------------------------------------------------
+  [ "$env_arg" = /etc/odoosync/env ] || refuse bad_args env
+  [[ "$service" =~ $SERVICES_RE ]] || refuse bad_args service
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || refuse bad_args digest
+  { [[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$ ]] && [[ "$ref" != *..* ]]; } || refuse bad_args ref
+  [ -z "$override" ] || [ "$override" = tier1-baseline ] || refuse bad_args override
+
+  need git; need jq
+  local env_file="$OS_ETC/env" flags="$OS_ETC/flags.env" policy="$OS_TRUST/image-policy.json" signers="$OS_TRUST/allowed_signers"
+
+  # ---- DEPLOY_FREEZE (also a guard of 5) ---------------------------------------------------------------------------------
+  if [ -f "$flags" ] && grep -Eq '^DEPLOY_FREEZE=([^0[:space:]].*|0.+)$' "$flags"; then
+    if [ "$manual" -ne 1 ] || { [ -z "${SUDO_USER:-}" ] && [ "$OS_TEST" -eq 0 ]; }; then refuse freeze; fi
+  fi
+
+  # ---- trust inputs: root-owned, not writable by anyone else -------------------------------------------------------------
+  local f
+  for f in "$env_file" "$policy" "$signers"; do
+    trust_file_ok "$f" || refuse trust_file_unsafe "$(basename "$f")"
+  done
+  if [ -f "$flags" ]; then trust_file_ok "$flags" || refuse trust_file_unsafe flags.env; fi
+  local deploy_env
+  deploy_env="$(sed -n 's/^OMNISYNC_DEPLOY_ENV=//p' "$env_file" | head -n1)"
+  [[ "$deploy_env" =~ ^(production|staging|rehearsal)$ ]] || refuse bad_env deploy_env
+
+  # ---- 2. the configuration: a verified, signed tag reachable from production --------------------------------------------
+  [ -d "$OS_BARE" ] || refuse no_clone
+  git -C "$OS_BARE" rev-parse -q --verify "refs/tags/${ref}" >/dev/null || refuse tag_unknown "$ref"
+  git -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$signers" -C "$OS_BARE" verify-tag "$ref" >/dev/null 2>&1 \
+    || refuse tag_unverified "$ref"
+  git -C "$OS_BARE" merge-base --is-ancestor "refs/tags/${ref}^{commit}" "$OS_PROD_REF" 2>/dev/null \
+    || refuse tag_not_on_production "$ref"
+  local rel="$OS_RELEASES/$ref"
+  rm -rf -- "$rel"; mkdir -p -- "$rel"
+  git -C "$OS_BARE" archive --format=tar "refs/tags/${ref}^{commit}" | tar -x -C "$rel"
+
+  # ---- 3. the image: fixed list, or an upstream image pinned by digest in that tag's compose file ------------------------
+  local repo
+  repo="$(jq -r --arg s "$service" '.services[$s] // empty' "$policy")"
+  [ -n "$repo" ] || refuse digest_not_listed "service_not_in_policy"
+  if jq -e --arg r "$repo" '(.upstream // []) | index($r)' "$policy" >/dev/null; then
+    grep -Fq -- "${repo}@${digest}" "$rel/compose/compose.yml" 2>/dev/null || refuse digest_not_listed "$repo"
+  else
+    local ident issuer
+    ident="$(jq -r --arg r "$repo" '.images[$r].identity // empty' "$policy")"
+    issuer="$(jq -r --arg r "$repo" '.images[$r].issuer // empty' "$policy")"
+    { [ -n "$ident" ] && [ -n "$issuer" ]; } || refuse digest_not_listed "$repo"
+    need cosign
+    cosign verify --certificate-identity "$ident" --certificate-oidc-issuer "$issuer" "${repo}@${digest}" >/dev/null 2>&1 \
+      || refuse signature_invalid "$repo"
+  fi
+
+  # ---- tier1-baseline override: one digest only, never after E1_FINAL; skips only the label and serving_values checks ----
+  local skip_label_sv=0
+  if [ "$override" = tier1-baseline ]; then
+    [ ! -e "$OS_STATE/E1_FINAL" ] || refuse tier1_after_final
+    trust_file_ok "$OS_TRUST/tier1-baseline.digest" || refuse trust_file_unsafe tier1-baseline.digest
+    [ "$(tr -d '[:space:]' < "$OS_TRUST/tier1-baseline.digest")" = "$digest" ] || refuse tier1_digest_mismatch
+    skip_label_sv=1
+  fi
+
+  # ---- 4. production only ------------------------------------------------------------------------------------------------
+  if [ "$deploy_env" = production ]; then
+    [ "$(jq -r --arg s "$service" '.[$s] // empty' "$rel/releases/production.json" 2>/dev/null)" = "$digest" ] \
+      || refuse prod_digest_mismatch "$service"
+    if [ "$skip_label_sv" -eq 0 ] && jq -e --arg r "$repo" '(.label_checked // []) | index($r)' "$policy" >/dev/null; then
+      need docker
+      local labels py dj
+      labels="$(docker image inspect --format '{{json .Config.Labels}}' "${repo}@${digest}" 2>/dev/null || echo '{}')"
+      py="$(jq -r '.["org.syncoria.python"] // "0"' <<<"$labels")"
+      dj="$(jq -r '.["org.syncoria.django"] // "0"' <<<"$labels")"
+      version_ge "$py" 3.12 || refuse label_python "$repo"
+      version_ge "$dj" 5.2 || refuse label_django "$repo"
+    fi
+  fi
+
+  # ---- 5. both environments ----------------------------------------------------------------------------------------------
+  if [ "$skip_label_sv" -eq 0 ] && jq -e --arg r "$repo" '(.label_checked // []) | index($r)' "$policy" >/dev/null; then
+    need docker
+    local svpath
+    svpath="$(jq -r '.serving_values_path // "/code/deploy/serving_values.json"' "$policy")"
+    docker run --rm --network none --entrypoint cat "${repo}@${digest}" "$svpath" 2>/dev/null \
+      | cmp -s - "$rel/nginx/serving_values.json" || refuse serving_values "$repo"
+  fi
+  if [ "$service" != postgres ]; then
+    need docker
+    # the running postgres container, found by its compose labels (no compose file is needed), asked over its local socket
+    local vnum pgproject pguser pgcid
+    pgproject="$(sed -n 's/^OMNISYNC_COMPOSE_PROJECT=//p' "$env_file" | head -n1)"; pgproject="${pgproject:-omnisync}"
+    pguser="$(jq -r '.pg_user // "postgres"' "$policy")"
+    pgcid="$(docker ps -q --filter "label=com.docker.compose.project=${pgproject}" \
+      --filter "label=com.docker.compose.service=postgres" 2>/dev/null | head -n1 || true)"
+    vnum=""
+    if [ -n "$pgcid" ]; then
+      vnum="$(docker exec "$pgcid" psql -U "$pguser" -d postgres -Atc 'show server_version_num' 2>/dev/null | tr -d '[:space:]' || true)"
+    fi
+    { [[ "$vnum" =~ ^[0-9]+$ ]] && [ "$vnum" -ge 140000 ]; } || refuse db_version "${vnum:-unknown}"
+  fi
+
+  # ---- slice 2 guards -----------------------------------------------------------------------------------------------------
+  # an image that must never run in this environment (clover-node on the rehearsal droplet, node-stub on production)
+  jq -e --arg e "$deploy_env" --arg r "$repo" '((.deny_repos // {})[$e] // []) | index($r)' "$policy" >/dev/null 2>&1 \
+    && refuse image_not_allowed "$repo"
+  # a service must not start while a secret it requires is missing or empty (names only)
+  local sname
+  while IFS= read -r sname; do
+    [ -n "$sname" ] || continue
+    secret_present "$sname" || refuse missing_secret "$sname"
+  done < <(jq -r --arg s "$service" '(.required_secrets // {})[$s] // [] | .[]' "$policy")
+  if [ "$service" = clover-node ]; then check_clover_env "$deploy_env" "$policy"; fi
+
+  printf 'request_ok service=%s digest=%s ref=%s env=%s\n' "$service" "$digest" "$ref" "$deploy_env"
+  if [ "$check_only" -eq 1 ]; then exit 0; fi
+  apply_recreate "$service" "$repo" "$digest" "$ref" "$rel" "$deploy_env" "$policy" "$env_file"
+}
+
+# ======================================================================================================== slice 2: apply
+PROD_PAYMENT_PATH_RE='^(web|web-terminal|edge|rabbitmq|postgres|clover-node)$'
+
+# true when NAME has a non-empty value in secrets.env (never prints the value)
+secret_present() {
+  local name="$1" f="$OS_ETC/secrets.env" v
+  trust_file_ok "$f" || return 1
+  v="$(awk -F= -v n="$name" '$1==n { sub(/^[^=]*=/, ""); print; exit }' "$f")"
+  [ -n "$v" ]
+}
+
+# clover-node env file: CLOVER_DEPLOY_ENV must equal the host role, and a non-production host must not name the production
+# Atlas host. Names only in the refusal.
+check_clover_env() {
+  local env="$1" policy="$2" f want have prodhost dburl
+  f="$(jq -r --arg d "$OS_ETC/clover.env" '.clover_env_file // $d' "$policy")"
+  trust_file_ok "$f" || refuse clover_env "file_missing_or_unsafe"
+  want="$env"
+  have="$(sed -n 's/^CLOVER_DEPLOY_ENV=//p' "$f" | head -n1)"
+  [ -n "$have" ] || refuse clover_env "deploy_env_unset"
+  [ "$have" = "$want" ] || refuse clover_env "deploy_env_${have}_on_${want}"
+  if [ "$want" != production ]; then
+    prodhost="$(sed -n 's/^CLOVER_PRODUCTION_DB_HOST=//p' "$f" | head -n1)"
+    dburl="$(sed -n 's/^DB_URL=//p' "$f" | head -n1)"
+    if [ -n "$prodhost" ] && [[ "$dburl" == *"$prodhost"* ]]; then refuse clover_env "names_production_atlas_host"; fi
+  fi
+}
+
+img_var() { local n="${1^^}"; printf 'IMAGE_%s' "${n//-/_}"; }
+
+# compose against the verified release tree, never a project-wide `up`
+dc() {
+  docker compose -p "$OS_PROJECT" -f "$OS_REL/compose/compose.yml" --env-file "$OS_ENV_FILE" --env-file "$OS_STATE/images.env" "$@"
+}
+
+set_image() {  # set_image <service> <image ref>   (atomic)
+  local var tmp; var="$(img_var "$1")"
+  tmp="$(mktemp "$OS_STATE/images.env.XXXXXX")"; chmod 644 "$tmp"
+  { if [ -f "$OS_STATE/images.env" ]; then grep -v "^${var}=" "$OS_STATE/images.env" || true; fi; printf '%s=%s\n' "$var" "$2"; } > "$tmp"
+  mv -f -- "$tmp" "$OS_STATE/images.env"
+}
+
+record_release() {  # record_release <service> <repo> <digest> <ref> <result>
+  jq -nc --arg ts "$(date -u +%FT%TZ)" --arg s "$1" --arg r "$2" --arg d "$3" --arg f "$4" --arg x "$5" \
+        --arg o "${SUDO_USER:-${USER:-root}}" '{ts:$ts,service:$s,repo:$r,digest:$d,ref:$f,result:$x,operator:$o}' \
+    >> "$OS_STATE/releases.jsonl"
+}
+
+# digests that were applied successfully for a service, newest last: "<digest> <ref> <repo>"
+ok_history() {
+  [ -f "$OS_STATE/releases.jsonl" ] || return 0
+  jq -r --arg s "$1" 'select(.service==$s and .result=="ok") | "\(.digest) \(.ref) \(.repo)"' "$OS_STATE/releases.jsonl"
+}
+
+# wait until the service is healthy (or, with no healthcheck, still running after a quiet period)
+wait_ready() {
+  local service="$1" policy="$2" tmax poll stable waited=0 cid state
+  tmax="$(jq -r '.readiness_timeout // 180' "$policy")"
+  poll="$(jq -r '.poll_seconds // 2' "$policy")"
+  stable="$(jq -r '.stable_seconds // 5' "$policy")"
+  cid="$(dc ps -q "$service" 2>/dev/null | head -n1)"
+  [ -n "$cid" ] || return 1
+  while [ "$waited" -le "$tmax" ]; do
+    state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null || echo gone)"
+    case "$state" in
+      healthy) return 0 ;;
+      unhealthy|gone) return 1 ;;
+      none) sleep "$stable"; docker inspect --format '{{.State.Running}}' "$cid" 2>/dev/null | grep -qx true && return 0 || return 1 ;;
+    esac
+    sleep "$poll"; waited=$(( waited + poll ))
+    [ "$poll" -gt 0 ] || waited=$(( waited + 1 ))
+  done
+  return 1
+}
+
+apply_recreate() {
+  local service="$1" repo="$2" digest="$3" ref="$4" rel="$5" env="$6" policy="$7" env_file="$8"
+  OS_REL="$rel"; OS_ENV_FILE="$env_file"
+  OS_PROJECT="$(sed -n 's/^OMNISYNC_COMPOSE_PROJECT=//p' "$env_file" | head -n1)"; OS_PROJECT="${OS_PROJECT:-omnisync}"
+  mkdir -p "$OS_STATE"
+
+  # production never recreates a service on the payment path until the zero-drop blue/green and the Clover drain exist
+  if [ "$env" = production ] && [[ "$service" =~ $PROD_PAYMENT_PATH_RE ]]; then refuse apply_needs_bluegreen "$service"; fi
+
+  # one deploy at a time
+  exec 9>"$OS_STATE/deploy.lock"
+  flock -n 9 || refuse busy
+
+  local prev prev_digest prev_repo
+  prev="$(ok_history "$service" | tail -n1 || true)"
+  prev_digest="${prev%% *}"; prev_repo="${prev##* }"
+
+  docker pull "${repo}@${digest}" >/dev/null 2>&1 || refuse pull_failed "$repo"
+
+  set_image "$service" "${repo}@${digest}"
+  if dc up -d --no-deps --force-recreate "$service" >/dev/null 2>&1 && wait_ready "$service" "$policy"; then
+    record_release "$service" "$repo" "$digest" "$ref" ok
+    printf 'applied service=%s digest=%s ref=%s\n' "$service" "$digest" "$ref"
+    exit 0
+  fi
+
+  # it did not come up healthy: put the previous image back
+  record_release "$service" "$repo" "$digest" "$ref" failed
+  if [ -n "$prev_digest" ] && [ "$prev_digest" != "$prev" ]; then
+    set_image "$service" "${prev_repo}@${prev_digest}"
+    if dc up -d --no-deps --force-recreate "$service" >/dev/null 2>&1 && wait_ready "$service" "$policy"; then
+      record_release "$service" "$prev_repo" "$prev_digest" "$ref" rolled_back
+      printf 'deploy_failed service=%s digest=%s rolled_back_to=%s\n' "$service" "$digest" "$prev_digest" >&2
+      logger -t odoosync-deploy -p auth.err -- "deploy_failed $service rolled_back" 2>/dev/null || true
+      exit 4
+    fi
+    printf 'deploy_failed service=%s rollback_also_failed\n' "$service" >&2
+    exit 5
+  fi
+  printf 'deploy_failed service=%s no_previous_release\n' "$service" >&2
+  exit 4
+}
+
+cmd_rollback() {
+  local service=""
+  while [ $# -gt 0 ]; do
+    case "$1" in --service) service="${2:-}"; shift 2 ;; *) refuse bad_args unknown_option ;; esac
+  done
+  [[ "$service" =~ $SERVICES_RE ]] || refuse bad_args service
+  local hist cur prev
+  hist="$(ok_history "$service" || true)"
+  # the current release is the last one; the previous is the newest one with another digest
+  cur="$(printf '%s\n' "$hist" | tail -n1)"
+  [ -n "$cur" ] || refuse no_previous_release "$service"
+  prev="$(printf '%s\n' "$hist" | awk -v c="${cur%% *}" '$1 != c {x=$0} END {print x}')"
+  [ -n "$prev" ] || refuse no_previous_release "$service"
+  # the older release goes through EVERY guard again (signed tag, signature, production release file, ...)
+  cmd_request --env /etc/odoosync/env --service "$service" --digest "${prev%% *}" --ref "$(cut -d' ' -f2 <<<"$prev")"
+}
+
+cmd_stop() {
+  [ $# -eq 1 ] || usage
+  local service="$1"
+  [[ "$service" =~ $SERVICES_RE ]] || refuse bad_args service
+  local env_file="$OS_ETC/env"
+  trust_file_ok "$env_file" || refuse trust_file_unsafe env
+  OS_ENV_FILE="$env_file"
+  OS_PROJECT="$(sed -n 's/^OMNISYNC_COMPOSE_PROJECT=//p' "$env_file" | head -n1)"; OS_PROJECT="${OS_PROJECT:-omnisync}"
+  # the compose file of the release this service is running: the tag recorded by its last successful deploy
+  local last_ref
+  last_ref="$(ok_history "$service" | tail -n1 | cut -d' ' -f2)"
+  { [ -n "$last_ref" ] && [ -d "$OS_RELEASES/$last_ref" ]; } || refuse no_release_tree "$service"
+  OS_REL="$OS_RELEASES/$last_ref"
+  [ -f "$OS_STATE/images.env" ] || touch "$OS_STATE/images.env"
+  dc stop "$service" >/dev/null 2>&1 || refuse stop_failed "$service"
+  record_release "$service" "-" "-" "-" stopped
+  printf 'stopped service=%s\n' "$service"
+}
+
+# flags: this slice supports DEPLOY_FREEZE only (it logs and recreates nothing). Other flags recreate services and wait for the
+# blue/green work.
+cmd_flag() {
+  local action="${1:-}" name="${2:-}" value="${3:-}" f="$OS_ETC/flags.env" tmp op
+  op="${SUDO_USER:-${USER:-root}}"
+  [ "$name" = DEPLOY_FREEZE ] || refuse flag_unsupported "${name:-none}"
+  case "$action" in
+    set)   { [ -n "$value" ] && [[ "$value" =~ ^[A-Za-z0-9._-]{1,32}$ ]]; } || refuse bad_args value ;;
+    unset) value="" ;;
+    *) usage ;;
+  esac
+  mkdir -p "$OS_ETC"
+  if [ -f "$f" ]; then trust_file_ok "$f" || refuse trust_file_unsafe flags.env; fi
+  tmp="$(mktemp "$f.XXXXXX")"; chmod 644 "$tmp"
+  { if [ -f "$f" ]; then grep -v '^DEPLOY_FREEZE=' "$f" || true; fi; [ "$action" = unset ] || printf 'DEPLOY_FREEZE=%s\n' "$value"; } > "$tmp"
+  mv -f -- "$tmp" "$f"
+  logger -t odoosync-deploy -- "flag $action DEPLOY_FREEZE by $op" 2>/dev/null || true
+  printf 'flag %s DEPLOY_FREEZE\n' "$action"
+}
+
+[ $# -ge 1 ] || usage
+case "$1" in
+  request) shift; cmd_request "$@" ;;
+  rollback) shift; cmd_rollback "$@" ;;
+  stop) shift; cmd_stop "$@" ;;
+  flag) shift; cmd_flag "$@" ;;
+  *) usage ;;
+esac

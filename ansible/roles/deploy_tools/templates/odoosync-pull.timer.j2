@@ -1,0 +1,12 @@
+# Managed by Ansible (role deploy_tools).
+[Unit]
+Description=Run the odoosync pull agent every {{ deploy_pull_interval }}
+
+[Timer]
+OnBootSec={{ deploy_pull_interval }}
+OnUnitInactiveSec={{ deploy_pull_interval }}
+AccuracySec=10s
+RandomizedDelaySec=15s
+
+[Install]
+WantedBy=timers.target

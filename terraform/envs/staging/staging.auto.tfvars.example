@@ -1,0 +1,31 @@
+# Copy to staging.auto.tfvars and fill in. NO secret goes in this file (git-ignored once copied: *.tfvars).
+# The Slack webhook URL is a secret: pass it as  export TF_VAR_slack_webhook_url=...
+region       = "tor1"                                       # the region of the staging droplet
+droplet_name = "syncoria-connector-modernization-staging"   # the EXISTING droplet (looked up, never created)
+
+# Your own public IPs. NEVER 0.0.0.0/0 for SSH (the module refuses it).
+admin_ssh_cidrs = ["203.0.113.10/32"]
+
+# Port 80 stays public (ACME and the sites). 443 only for these addresses (staging has no TLS today).
+public_http = true
+https_cidrs = []
+
+# Staging only: who may reach Clover (8081) and Grafana (3001). Use your own IPs; [] closes the port.
+clover_ui_cidrs = ["203.0.113.10/32"]
+grafana_cidrs   = ["203.0.113.10/32"]
+
+# PostgreSQL data volume (deletion-protected, attached by hand with doctl). Off until the compose stack mounts it.
+create_pgdata_volume = false
+pgdata_size_gib      = 20
+
+# WAL-G backup bucket (names are unique per region across ALL customers, so choose your own). "" = none.
+walg_bucket_name = ""
+
+alert_emails = ["ops@example.com"]
+slack_channel = ""
+
+uptime_enabled = false
+uptime_targets = {
+  admin  = "http://203.0.113.9/"
+  clover = "http://203.0.113.9:8081/"
+}

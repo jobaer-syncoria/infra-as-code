@@ -31,6 +31,12 @@ jobs:
             echo "== validate $d"
             (cd "$d" && terraform init -backend=false -input=false >/dev/null && terraform validate)
           done
+      - name: "Module tests (mock provider, so no DigitalOcean account and no token)"
+        run: |
+          for m in $(find terraform/modules -name '*.tftest.hcl' -printf '%h/..\n' | sort -u); do
+            echo "== terraform test $m"
+            (cd "$m" && terraform init -backend=false -input=false >/dev/null && terraform test)
+          done
       - uses: terraform-linters/setup-tflint@v4
       - name: tflint
         run: |
@@ -55,7 +61,8 @@ jobs:
         run: |
           if [ -z "$(find ansible -name '*.yml' -print -quit)" ]; then echo "no ansible yet"; exit 0; fi
           pip install "ansible-core~=2.21.0" ansible-lint molecule molecule-plugins[docker]
-          ansible-galaxy collection install -r ansible/requirements.yml -p ansible/collections
+          # Galaxy sometimes answers with a corrupt cache entry: retry before failing
+          for i in 1 2 3; do ansible-galaxy collection install -r ansible/requirements.yml -p ansible/collections && break || { echo "galaxy attempt $i failed"; sleep 15; }; done
           (cd ansible && ANSIBLE_COLLECTIONS_PATH=./collections ansible-lint .)
           for r in ansible/roles/*/molecule; do [ -d "$r" ] && (cd "$(dirname "$r")" && molecule test); done || true
 
@@ -67,7 +74,7 @@ jobs:
       - name: shellcheck
         run: |
           files=$(grep -rIl --exclude-dir=.git -E '^#!.*(ba)?sh' scripts ci cloud-init 2>/dev/null || true)
-          [ -z "$files" ] || shellcheck $files
+          [ -z "$files" ] || shellcheck -x -P SCRIPTDIR $files $(ls scripts/lib/*.sh 2>/dev/null)
       - name: bats
         run: |
           [ -n "$(find scripts -name '*.bats' -print -quit 2>/dev/null)" ] || { echo "no bats tests yet"; exit 0; }
@@ -82,7 +89,8 @@ jobs:
       - name: docker compose config -q (dummy env files)
         run: |
           [ -f compose/compose.yml ] || { echo "no compose yet"; exit 0; }
-          docker compose -f compose/compose.yml config -q
+          mkdir -p /tmp/stack-env && touch /tmp/stack-env/omnisync.env
+          STACK_ENV_DIR=/tmp/stack-env docker compose -f compose/compose.yml config -q
       - name: nginx -t for every variant
         run: |
           [ -f nginx/nginx.conf ] || { echo "no nginx yet"; exit 0; }

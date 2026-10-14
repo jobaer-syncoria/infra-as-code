@@ -20,3 +20,26 @@ clover_production_db_host: "CHANGE-ME-atlas-host"
 
 # --- database: restored from the production dump only through the runbook's own procedure -----------------------------------
 # db_restore_file stays as in staging; the production cutover uses the sealed dump from the transfer volume (runbook Phase 7).
+
+# --- deploy tools: the production image is signed by the production release workflow ----------------------------------------
+deploy_env: production
+deploy_image_repo: ghcr.io/syncoria/omnisync
+deploy_signer_identity: https://github.com/syncoria/omnisync/.github/workflows/release.yml@refs/heads/production
+# Approver keys for production are set by the release approvers, never here.
+deploy_pull_enabled: false           # automatic deploys on production are a deliberate decision (promotion by signed tag)
+# production reads digests from the signed releases/production.json, never from the registry: no pull.tag here
+deploy_policy:
+  services:
+    web: "{{ deploy_image_repo }}"
+    worker: "{{ deploy_image_repo }}"
+  upstream: []
+  images: "{{ {deploy_image_repo: {'identity': deploy_signer_identity, 'issuer': deploy_signer_issuer}} }}"
+  label_checked: ["{{ deploy_image_repo }}"]
+  serving_values_path: /code/deploy/serving_values.json
+  required_secrets: {}
+  deny_repos: {}
+  readiness_timeout: 240
+  poll_seconds: 3
+  stable_seconds: 10
+  pull:
+    services: [worker]               # the payment-path services are refused by odoosync-deploy until blue/green exists

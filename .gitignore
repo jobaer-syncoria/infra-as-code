@@ -12,3 +12,5 @@ bundles/
 restore/
 *.dump
 *.sql
+*.auto.tfvars
+terraform.tfstate*

@@ -1,0 +1,8 @@
+---
+# Install (or update) the deploy tools and the pull timer on an ALREADY BUILT server. Needs sudo on the server, no prompts.
+#   /opt/ansible-venv/bin/ansible-playbook -i inventories/staging playbooks/deploy-tools.yml -e deploy_approver_keys_file=/path/on/server/approver_keys
+- name: Deploy tools on an existing server
+  hosts: all
+  become: true
+  roles:
+    - deploy_tools

@@ -1,0 +1,31 @@
+# Release compose for the omnisync services on the staging server (first slice of runbook PI.4).
+# It is applied ONLY by odoosync-deploy, from a signed release tag, never from a checkout:
+#   - images come from IMAGE_* (odoosync-deploy writes /srv/odoosync/state/images.env with repo@digest);
+#     a service that was not deployed yet falls back to the image the Ansible stack built locally;
+#   - the env files are host-local secrets that never enter git: STACK_ENV_DIR (set in /etc/odoosync/env) points at them.
+# Only `web` and `worker` are managed here. The other services stay as the Ansible stack role defines them.
+services:
+  web:
+    image: ${IMAGE_WEB:-omnisync-stg:local}
+    restart: unless-stopped
+    env_file: ${STACK_ENV_DIR:-/etc/odoosync/stack}/omnisync.env
+    # the committed gunicorn config (gthread); migrate first, as in the Ansible stack
+    command: >
+      bash -c "python wait_for_postgres.py && python manage.py migrate --noinput &&
+      exec newrelic-admin run-program gunicorn -c deploy/gunicorn_web.conf.py omnisync.wsgi:application"
+    ports: ["127.0.0.1:8000:8000"]
+    # STOP_GRACE from nginx/serving_values.json: in-flight calls finish before the container is stopped
+    stop_grace_period: 270s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8000), 3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+  worker:
+    image: ${IMAGE_WORKER:-omnisync-stg:local}
+    restart: unless-stopped
+    env_file: ${STACK_ENV_DIR:-/etc/odoosync/stack}/omnisync.env
+    command: celery -A omnisync worker -l info
+    # warm shutdown lets the running email task finish (runbook: -t 120 worker)
+    stop_grace_period: 120s
