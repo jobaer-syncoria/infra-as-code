@@ -69,6 +69,7 @@
         - {src: odoosync-secrets, mode: "0755"}
         - {src: odoosync-pull, mode: "0755"}
         - {src: odoosync-verify, mode: "0755"}
+        - {src: cert-bootstrap.sh, mode: "0755"}
         - {src: lib/common.sh, mode: "0644"}
 
     - name: Put the tools on the root PATH
@@ -76,7 +77,13 @@
         src: "{{ deploy_tools_dir }}/{{ item }}"
         dest: "/usr/local/sbin/{{ item }}"
         state: link
-      loop: [odoosync-deploy, odoosync-secrets, odoosync-pull, odoosync-verify]
+      loop: [odoosync-deploy, odoosync-secrets, odoosync-pull, odoosync-verify, cert-bootstrap.sh]
+
+    - name: Certbot (snap, classic) where the policy lists certificates; cert-bootstrap.sh then issues them
+      when: deploy_policy.certs is defined
+      community.general.snap:
+        name: certbot
+        classic: true
 
     - name: Environment file read by the tools (root-owned, not writable by others)
       ansible.builtin.template:

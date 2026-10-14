@@ -43,3 +43,11 @@ deploy_policy:
   stable_seconds: 10
   pull:
     services: [worker]               # the payment-path services are refused by odoosync-deploy until blue/green exists
+  # cert-bootstrap.sh (ADR-08 3.6): three certificates, so one failed renewal cannot take every name down.
+  # The contact email is the infra owner's decision; the tool refuses while it says CHANGE-ME.
+  certs:
+    email: "CHANGE-ME@syncoria.com"
+    certs:
+      odoosync.com: [odoosync.com, www.odoosync.com]
+      api.odoosync.com: [api.odoosync.com]
+      clover.odoosync.com: [clover.odoosync.com]
