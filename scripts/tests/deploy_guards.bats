@@ -79,11 +79,11 @@ refused() { [ "$status" -eq 3 ] && [[ "$output" == *"deploy_refused $1"* ]]; }
   refused digest_not_listed
 }
 @test "DEP-04: production refuses an image whose Python label is below 3.12" {
-  STUB_LABELS='{"org.syncoria.python.version":"3.11.9","org.syncoria.django.version":"5.2.1"}' request web "$D1" release/ok
+  STUB_LABELS='{"org.syncoria.python":"3.11.9","org.syncoria.django":"5.2.1"}' request web "$D1" release/ok
   refused label_python
 }
 @test "DEP-04: production refuses an image whose Django label is below 5.2" {
-  STUB_LABELS='{"org.syncoria.python.version":"3.12.4","org.syncoria.django.version":"5.1.9"}' request web "$D1" release/ok
+  STUB_LABELS='{"org.syncoria.python":"3.12.4","org.syncoria.django":"5.1.9"}' request web "$D1" release/ok
   refused label_django
 }
 @test "DEP-04: production refuses an image with no labels at all" {
@@ -92,7 +92,7 @@ refused() { [ "$status" -eq 3 ] && [[ "$output" == *"deploy_refused $1"* ]]; }
 }
 @test "DEP-04: staging does not apply the production label matrix" {
   set_env staging
-  STUB_LABELS='{"org.syncoria.python.version":"3.10"}' request web "$D1" release/ok
+  STUB_LABELS='{"org.syncoria.python":"3.10"}' request web "$D1" release/ok
   [ "$status" -eq 0 ]
 }
 @test "DEP-04: a database below PostgreSQL 14 is refused" {

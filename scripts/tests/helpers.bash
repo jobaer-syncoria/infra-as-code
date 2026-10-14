@@ -30,7 +30,7 @@ make_sandbox() {
   git clone -q --bare "$WORK" "$SRV/infra.git"
   make_stubs
   export PATH="$STUBS:$PATH"
-  export STUB_LABELS='{"org.syncoria.python.version":"3.12.4","org.syncoria.django.version":"5.2.1"}'
+  export STUB_LABELS='{"org.syncoria.python":"3.12.4","org.syncoria.django":"5.2.1"}'
   export STUB_SERVING_FILE="$WORK/nginx/serving_values.json"
   export STUB_PGVER=170011
   export STUB_COSIGN_OK_IDENTITY="$IDENT_PROD"

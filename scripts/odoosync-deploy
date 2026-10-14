@@ -107,8 +107,8 @@ cmd_request() {
       need docker
       local labels py dj
       labels="$(docker image inspect --format '{{json .Config.Labels}}' "${repo}@${digest}" 2>/dev/null || echo '{}')"
-      py="$(jq -r '.["org.syncoria.python.version"] // "0"' <<<"$labels")"
-      dj="$(jq -r '.["org.syncoria.django.version"] // "0"' <<<"$labels")"
+      py="$(jq -r '.["org.syncoria.python"] // "0"' <<<"$labels")"
+      dj="$(jq -r '.["org.syncoria.django"] // "0"' <<<"$labels")"
       version_ge "$py" 3.12 || refuse label_python "$repo"
       version_ge "$dj" 5.2 || refuse label_django "$repo"
     fi
