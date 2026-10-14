@@ -65,3 +65,8 @@ clover_db_url_file: /opt/odoosync-secrets/clover_db_url
 clover_deploy_env: staging
 # The production Atlas HOST NAME only (not a secret, no scheme, no password). Set it in every environment to arm the guard.
 clover_production_db_host: ""
+
+# --- Clover Mongo restore (optional, local mongo container only) ------------------------------------------------------------
+# If this file exists and the local mongo has not been restored yet, it is restored (mongorestore --archive --gzip --drop)
+# before clover-node starts. The PC script uploads it when you set MONGO_DUMP=/path/to/archive. Not used with a cloud Mongo.
+mongo_restore_file: /opt/odoosync-restore/clover.archive

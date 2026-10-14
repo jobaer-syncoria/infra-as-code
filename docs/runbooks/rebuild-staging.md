@@ -65,7 +65,22 @@ Phase 7, ADR-03 and ADR-09: sealed dump from the transfer volume, Django upgrade
 old-version database into the new code is **not** the approved path until that is rehearsed on staging with a copy of
 the real data.
 
-### 2c. Use a cloud Mongo (Atlas) for Clover instead of the local container (optional)
+### 2b2. Restore the Clover Mongo (local mongo container only)
+```bash
+MONGO_DUMP=/home/zubayer/staging-backup/mongo-clover-20261014-0045.archive /home/zubayer/infra-as-code/rebuild-staging.sh <server-ip> [key]
+```
+Restores the archive (`mongodump --archive --gzip`) into the local mongo container **before** clover-node starts, replacing the
+`clover` database. The Clover users, merchant configs (with their app secrets), device lines and auth policies come back, so you
+do not re-enter anything and no Clover admin prompt appears. A rerun does not restore again (marker `~/apps/stack/.mongo-restored`;
+delete it to restore again). You can pass both `DB_DUMP` and `MONGO_DUMP` in one run.
+**Not used with a cloud Mongo** (see 2c): then the data already lives in Atlas and nothing is restored or migrated.
+
+**Make a Clover backup any time:**
+```bash
+ssh syncoria-dev@<server-ip> 'cd ~/apps/stack && docker compose -p omnisync-stg exec -T mongo sh -c "mongodump --quiet --uri=\"mongodb://\$MONGO_INITDB_ROOT_USERNAME:\$MONGO_INITDB_ROOT_PASSWORD@localhost:27017/clover?authSource=admin\" --archive --gzip"' > clover-$(date +%Y%m%d-%H%M).archive
+```
+
+### 2c. Use a cloud Mongo (Atlas) for Clover instead of the local container (optional; this is how go-live works)
 By default Clover uses a Mongo container on the server (staging). To point it at a cloud Mongo, such as an Atlas staging
 cluster or, at go-live, the production Atlas:
 ```bash

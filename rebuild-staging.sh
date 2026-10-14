@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2029  # remote commands intentionally expand $VARS on this side
 # Run on YOUR PC after the droplet was (re)built. Packs the three app repos, copies them and this repo to the server and
 # runs the Ansible rebuild there.
 #   ./rebuild-staging.sh <server-ip> [path-to-ssh-private-key]
@@ -6,6 +7,7 @@
 #             SSH_USER=syncoria-dev   no root SSH needed: files go to the user's home and the last step runs `sudo`
 #                                     (you type the sudo password once, in your own terminal)
 # Optional: DB_DUMP=/path/to/omnisync.dump        restore that database dump (pg_dump -Fc or plain SQL)
+# Optional: MONGO_DUMP=/path/to/clover.archive    restore that Clover Mongo archive (mongodump --archive --gzip) into the local mongo container
 # Optional: CLOVER_DB_URL='mongodb+srv://...'      use that cloud Mongo (Atlas) instead of the local mongo container. The URL is
 #           sent over SSH into a 0600 file on the server; it is never printed or put in the repo.
 # Optional: ANSIBLE_ARGS='-e clover_deploy_env=production -e clover_production_db_host=<atlas-host>'   extra Ansible settings
@@ -21,11 +23,11 @@ R="$USER_@$IP"
 if [ "$USER_" = root ]; then BASE=/root; ASUDO=""; BUNDLES=/opt/odoosync-bundles; RESTORE=/opt/odoosync-restore; SECRETS=/opt/odoosync-secrets
 else BASE="/home/$USER_"; ASUDO="sudo "; BUNDLES="$BASE/odoosync-bundles"; RESTORE="$BASE/odoosync-restore"; SECRETS="$BASE/odoosync-secrets"; fi
 INFRA="$BASE/odoosync-infra"
-EXTRA="-e code_bundle_dir=$BUNDLES -e db_restore_file=$RESTORE/omnisync.dump -e clover_db_url_file=$SECRETS/clover_db_url"
+EXTRA="-e code_bundle_dir=$BUNDLES -e mongo_restore_file=$RESTORE/clover.archive -e db_restore_file=$RESTORE/omnisync.dump -e clover_db_url_file=$SECRETS/clover_db_url"
 # The admin-password prompts only make sense on empty databases: a restored dump already holds its users, and a cloud Mongo
 # already holds Clover's. Passing the variables (empty) tells Ansible not to ask.
 [ -z "${DB_DUMP:-}" ] || EXTRA="$EXTRA -e omnisync_admin_password="
-[ -z "${CLOVER_DB_URL:-}" ] || EXTRA="$EXTRA -e clover_admin_password="
+[ -z "${CLOVER_DB_URL:-}${MONGO_DUMP:-}" ] || EXTRA="$EXTRA -e clover_admin_password="
 
 echo "== 1/4 forget the old host key (a rebuilt server has a new one)"
 ssh-keygen -R "$IP" >/dev/null 2>&1 || true
@@ -44,6 +46,13 @@ if [ -n "${DB_DUMP:-}" ]; then
   echo "== 3b/4 upload the database dump ($(du -h "$DB_DUMP" | cut -f1))"
   ssh "${SSH_OPTS[@]}" "$R" "mkdir -p '$RESTORE' && chmod 700 '$RESTORE'"
   ssh "${SSH_OPTS[@]}" "$R" "cat > '$RESTORE/omnisync.dump' && chmod 600 '$RESTORE/omnisync.dump'" < "$DB_DUMP"
+fi
+
+if [ -n "${MONGO_DUMP:-}" ]; then
+  [ -f "$MONGO_DUMP" ] || { echo "MONGO_DUMP not found: $MONGO_DUMP" >&2; exit 1; }
+  echo "== 3b2/4 upload the Clover Mongo archive ($(du -h "$MONGO_DUMP" | cut -f1))"
+  ssh "${SSH_OPTS[@]}" "$R" "mkdir -p '$RESTORE' && chmod 700 '$RESTORE'"
+  ssh "${SSH_OPTS[@]}" "$R" "cat > '$RESTORE/clover.archive' && chmod 600 '$RESTORE/clover.archive'" < "$MONGO_DUMP"
 fi
 
 if [ -n "${CLOVER_DB_URL:-}" ]; then
