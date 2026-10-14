@@ -49,7 +49,7 @@ cmd_request() {
   [ "$env_arg" = /etc/odoosync/env ] || refuse bad_args env
   [[ "$service" =~ $SERVICES_RE ]] || refuse bad_args service
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || refuse bad_args digest
-  [[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$ ]] && [[ "$ref" != *..* ]] || refuse bad_args ref
+  { [[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$ ]] && [[ "$ref" != *..* ]]; } || refuse bad_args ref
   [ -z "$override" ] || [ "$override" = tier1-baseline ] || refuse bad_args override
 
   need git; need jq
@@ -91,7 +91,7 @@ cmd_request() {
     local ident issuer
     ident="$(jq -r --arg r "$repo" '.images[$r].identity // empty' "$policy")"
     issuer="$(jq -r --arg r "$repo" '.images[$r].issuer // empty' "$policy")"
-    [ -n "$ident" ] && [ -n "$issuer" ] || refuse digest_not_listed "$repo"
+    { [ -n "$ident" ] && [ -n "$issuer" ]; } || refuse digest_not_listed "$repo"
     need cosign
     cosign verify --certificate-identity "$ident" --certificate-oidc-issuer "$issuer" "${repo}@${digest}" >/dev/null 2>&1 \
       || refuse signature_invalid "$repo"
@@ -133,7 +133,7 @@ cmd_request() {
     need docker
     local vnum
     vnum="$(docker compose -p omnisync exec -T postgres psql -U postgres -Atc 'show server_version_num' 2>/dev/null | tr -d '[:space:]' || true)"
-    [[ "$vnum" =~ ^[0-9]+$ ]] && [ "$vnum" -ge 140000 ] || refuse db_version "${vnum:-unknown}"
+    { [[ "$vnum" =~ ^[0-9]+$ ]] && [ "$vnum" -ge 140000 ]; } || refuse db_version "${vnum:-unknown}"
   fi
 
   # ---- slice 2 guards -----------------------------------------------------------------------------------------------------
@@ -191,7 +191,7 @@ dc() {
 set_image() {  # set_image <service> <image ref>   (atomic)
   local var tmp; var="$(img_var "$1")"
   tmp="$(mktemp "$OS_STATE/images.env.XXXXXX")"; chmod 644 "$tmp"
-  { [ -f "$OS_STATE/images.env" ] && grep -v "^${var}=" "$OS_STATE/images.env" || true; printf '%s=%s\n' "$var" "$2"; } > "$tmp"
+  { if [ -f "$OS_STATE/images.env" ]; then grep -v "^${var}=" "$OS_STATE/images.env" || true; fi; printf '%s=%s\n' "$var" "$2"; } > "$tmp"
   mv -f -- "$tmp" "$OS_STATE/images.env"
 }
 
@@ -299,7 +299,7 @@ cmd_stop() {
   # the compose file of the release this service is running: the tag recorded by its last successful deploy
   local last_ref
   last_ref="$(ok_history "$service" | tail -n1 | cut -d' ' -f2)"
-  [ -n "$last_ref" ] && [ -d "$OS_RELEASES/$last_ref" ] || refuse no_release_tree "$service"
+  { [ -n "$last_ref" ] && [ -d "$OS_RELEASES/$last_ref" ]; } || refuse no_release_tree "$service"
   OS_REL="$OS_RELEASES/$last_ref"
   [ -f "$OS_STATE/images.env" ] || touch "$OS_STATE/images.env"
   dc stop "$service" >/dev/null 2>&1 || refuse stop_failed "$service"
@@ -314,14 +314,14 @@ cmd_flag() {
   op="${SUDO_USER:-${USER:-root}}"
   [ "$name" = DEPLOY_FREEZE ] || refuse flag_unsupported "${name:-none}"
   case "$action" in
-    set)   [ -n "$value" ] && [[ "$value" =~ ^[A-Za-z0-9._-]{1,32}$ ]] || refuse bad_args value ;;
+    set)   { [ -n "$value" ] && [[ "$value" =~ ^[A-Za-z0-9._-]{1,32}$ ]]; } || refuse bad_args value ;;
     unset) value="" ;;
     *) usage ;;
   esac
   mkdir -p "$OS_ETC"
   if [ -f "$f" ]; then trust_file_ok "$f" || refuse trust_file_unsafe flags.env; fi
   tmp="$(mktemp "$f.XXXXXX")"; chmod 644 "$tmp"
-  { [ -f "$f" ] && grep -v '^DEPLOY_FREEZE=' "$f" || true; [ "$action" = unset ] || printf 'DEPLOY_FREEZE=%s\n' "$value"; } > "$tmp"
+  { if [ -f "$f" ]; then grep -v '^DEPLOY_FREEZE=' "$f" || true; fi; [ "$action" = unset ] || printf 'DEPLOY_FREEZE=%s\n' "$value"; } > "$tmp"
   mv -f -- "$tmp" "$f"
   logger -t odoosync-deploy -- "flag $action DEPLOY_FREEZE by $op" 2>/dev/null || true
   printf 'flag %s DEPLOY_FREEZE\n' "$action"

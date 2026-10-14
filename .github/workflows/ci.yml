@@ -61,7 +61,8 @@ jobs:
         run: |
           if [ -z "$(find ansible -name '*.yml' -print -quit)" ]; then echo "no ansible yet"; exit 0; fi
           pip install "ansible-core~=2.21.0" ansible-lint molecule molecule-plugins[docker]
-          ansible-galaxy collection install -r ansible/requirements.yml -p ansible/collections
+          # Galaxy sometimes answers with a corrupt cache entry: retry before failing
+          for i in 1 2 3; do ansible-galaxy collection install -r ansible/requirements.yml -p ansible/collections && break || { echo "galaxy attempt $i failed"; sleep 15; }; done
           (cd ansible && ANSIBLE_COLLECTIONS_PATH=./collections ansible-lint .)
           for r in ansible/roles/*/molecule; do [ -d "$r" ] && (cd "$(dirname "$r")" && molecule test); done || true
 
