@@ -65,10 +65,4 @@
     content: |
       [Journal]
       SystemMaxUse=500M
-  register: base_journald_cap
-
-- name: Apply the journal cap
-  when: base_journald_cap.changed
-  ansible.builtin.systemd:
-    name: systemd-journald
-    state: restarted
+  notify: Restart journald

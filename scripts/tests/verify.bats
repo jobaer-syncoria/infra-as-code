@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2016,SC2164,SC2314   # stub bodies are single-quoted on purpose; the sandbox cd cannot fail; `! grep` is the last command
 # odoosync-verify: read-only host and stack checks. A sandbox with stand-ins for every system command. No network, no root.
 
 SCRIPTS="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"

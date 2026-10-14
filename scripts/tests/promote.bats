@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2016,SC2164,SC2314   # stub bodies are single-quoted on purpose; the sandbox cd cannot fail; `! grep` is the last command
 # odoosync-promote: the approver-side promotion guard (A8-15) and the restore-test gate (INFRA-PG-11-10).
 # A sandbox clone with a bare "origin" and stand-ins for cosign, docker, curl and gh. No network.
 
