@@ -56,6 +56,14 @@
     executable: /bin/bash
   changed_when: false
 
+- name: The journald drop-in folder (a fresh image does not have it)
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Cap the systemd journal so logs cannot fill the disk (odoosync-verify host checks it; the size is an assumption)
   ansible.builtin.copy:
     dest: /etc/systemd/journald.conf.d/50-odoosync-cap.conf
