@@ -31,6 +31,12 @@ jobs:
             echo "== validate $d"
             (cd "$d" && terraform init -backend=false -input=false >/dev/null && terraform validate)
           done
+      - name: "Module tests (mock provider, so no DigitalOcean account and no token)"
+        run: |
+          for m in $(find terraform/modules -name '*.tftest.hcl' -printf '%h/..\n' | sort -u); do
+            echo "== terraform test $m"
+            (cd "$m" && terraform init -backend=false -input=false >/dev/null && terraform test)
+          done
       - uses: terraform-linters/setup-tflint@v4
       - name: tflint
         run: |

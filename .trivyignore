@@ -1,0 +1,11 @@
+# Accepted findings for `trivy config`, each with its reason (ADR-08 3.3). Review them with the security owner.
+
+# DIG-0001: a firewall rule allows inbound traffic from any address.
+# Only ICMP (diagnostics, path-MTU) and port 80 (Let's Encrypt HTTP-01 and the public sites) are open to the world. SSH is never
+# open to the world: the module refuses 0.0.0.0/0 for admin_ssh_cidrs.
+AVD-DIG-0001
+
+# DIG-0003: a firewall rule allows outbound traffic to any address.
+# omnisync makes 84 outbound calls to arbitrary hosts, including merchant URLs on arbitrary ports, and DigitalOcean drops ALL
+# egress when a firewall has no outbound rule. Egress restriction is deferred until after hypercare (ADR-08 3.3).
+AVD-DIG-0003

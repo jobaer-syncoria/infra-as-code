@@ -8,7 +8,8 @@ Never a token, key, password or connection string.
 |---|---|---|
 | Droplet | _filled after PI.11_ | terraform output |
 | VPC | `odoosync-stg-tor1` (PROPOSED) | ADR-09 r3 3.4 |
-| pgdata volume | `odoosync-pgdata-stg` | ADR-11 3.1 |
+| pgdata volume | `odoosync-stg-pgdata` (optional, deletion-protected, attached by hand) | terraform/envs/staging |
+| Cloud Firewall | `odoosync-stg-fw` | terraform/envs/staging |
 
 ## production (N, droplet 343876780)
 | Item | Value | Source |
