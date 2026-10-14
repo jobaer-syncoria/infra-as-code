@@ -21,7 +21,7 @@
     set -o pipefail
     f=/srv/odoosync/state/images.env
     [ -f "$f" ] || exit 0
-    grep -oE '^IMAGE_(WEB|WORKER|CLOVER_NODE)=' "$f" | sed 's/^IMAGE_//; s/=$//; s/_/-/g' | tr 'A-Z' 'a-z'
+    grep -oE '^IMAGE_(WEB|WORKER|CLOVER_NODE|ADMIN_WEB)=' "$f" | sed 's/^IMAGE_//; s/=$//; s/_/-/g' | tr 'A-Z' 'a-z'
   args:
     executable: /bin/bash
   register: stack_owned
@@ -32,6 +32,7 @@
     stack_signed_web: "{{ 'web' in stack_owned.stdout_lines }}"
     stack_signed_worker: "{{ 'worker' in stack_owned.stdout_lines }}"
     stack_signed_clover: "{{ 'clover-node' in stack_owned.stdout_lines }}"
+    stack_signed_admin: "{{ 'admin-web' in stack_owned.stdout_lines }}"
     stack_any_signed: "{{ stack_owned.stdout_lines | length > 0 }}"
 
 - name: Compose file and nginx config (re-rendered every run)
@@ -68,7 +69,8 @@
       {{ stack_services.stdout_lines
          | difference(['web'] if stack_signed_web else [])
          | difference(['worker'] if stack_signed_worker else [])
-         | difference(['clover-node'] if stack_signed_clover else []) }}
+         | difference(['clover-node'] if stack_signed_clover else [])
+         | difference(['admin-web'] if stack_signed_admin else []) }}
   ansible.builtin.command:
     cmd: >-
       docker compose -p {{ compose_project }} -f docker-compose.yml

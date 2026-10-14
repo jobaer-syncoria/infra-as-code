@@ -40,19 +40,23 @@ services:
     env_file: omnisync.env
     command: celery -A omnisync worker -l info
     depends_on: [web]
-  admin:
+  admin-web:
+{% if stack_signed_admin | default(false) %}
+    image: ${IMAGE_ADMIN_WEB}
+{% else %}
     build:
       context: ../syncoria-connector-admin
       args:
         VITE_API_BASE_URL: http://{{ public_host_eff }}/api
     image: admin-stg:local
+{% endif %}
     restart: unless-stopped
   edge:
     image: {{ img_nginx }}
     restart: unless-stopped
     volumes: ["./nginx.conf:/etc/nginx/conf.d/default.conf:ro"]
     ports: ["80:80"]
-    depends_on: [web, admin]
+    depends_on: [web, admin-web]
 {% if not stack_external_mongo %}
   mongo:
     image: {{ img_mongo }}
