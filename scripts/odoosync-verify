@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# odoosync-verify: read-only checks of a droplet (ADR-08 7, runbook PI.5 item 4). Run as root on the server. It changes nothing.
+#   odoosync-verify versions            what runs: OS, kernel, Docker, Compose, nginx, PostgreSQL, RabbitMQ, image Python/Django
+#   odoosync-verify host [--post-boot]  baseline (INFRA-STG-04); --post-boot adds the pgdata mountpoint and VOLUME_ID check (ADR-11 3.1)
+#   odoosync-verify smoke               every container of the project is up and healthy, and the policy's smoke URLs answer
+#   odoosync-verify security            nothing listens publicly that the policy does not allow; the database has no public path
+# Not yet implemented (they need the colour layout and the second environment): parity, flags, readiness.
+# One line per check:  PASS|FAIL|WARN|INFO <name> [detail]. Exit 0 when nothing FAILed, 1 otherwise, 2 for bad use.
+# Never prints a secret: only names, versions, ports and counts.
+set -uo pipefail
+HERE="$(dirname "$(readlink -f "$0")")"
+# shellcheck source=/dev/null
+. "$HERE/lib/common.sh"
+
+# the sandbox keeps the host files it reads under $ODOOSYNC_TEST_ROOT/rootfs (only when not root, see lib/common.sh)
+RFS=""; if [ "$OS_TEST" -eq 1 ]; then RFS="$ODOOSYNC_TEST_ROOT/rootfs"; fi
+
+FAILS=0
+pass() { printf 'PASS %s%s\n' "$1" "${2:+ $2}"; }
+fail() { printf 'FAIL %s%s\n' "$1" "${2:+ $2}"; FAILS=$((FAILS + 1)); }
+warn() { printf 'WARN %s%s\n' "$1" "${2:+ $2}"; }
+info() { printf 'INFO %s%s\n' "$1" "${2:+ $2}"; }
+finish() { if [ "$FAILS" -eq 0 ]; then echo "verify_ok"; exit 0; else echo "verify_failed $FAILS"; exit 1; fi; }
+
+need jq
+ENV_FILE="$OS_ETC/env"; POLICY="$OS_TRUST/image-policy.json"
+envval() { sed -n "s/^$1=//p" "$ENV_FILE" 2>/dev/null | head -n1; }
+DEPLOY_ENV="$(envval OMNISYNC_DEPLOY_ENV)"
+PROJECT="$(envval OMNISYNC_COMPOSE_PROJECT)"; PROJECT="${PROJECT:-omnisync}"
+pol() { jq -r "$1" "$POLICY" 2>/dev/null; }
+
+cid() {  # the container id of a compose service in this project (first one)
+  docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=$1" 2>/dev/null | head -n1
+}
+pgq() {  # pgq <sql>: a read-only query through the local socket of the postgres container
+  local c pguser; c="$(cid postgres)"; [ -n "$c" ] || return 1
+  pguser="$(pol '.pg_user // "postgres"')"
+  docker exec "$c" psql -U "$pguser" -d postgres -Atc "$1" 2>/dev/null
+}
+
+cmd_versions() {
+  need docker
+  local os kernel dv cv c v ctr img labels
+  os="$(sed -n 's/^PRETTY_NAME=//p' "$RFS/etc/os-release" 2>/dev/null | tr -d '"')"
+  if [ -n "$os" ]; then info os "$os"; else fail os unreadable; fi
+  kernel="$(uname -r)"; info kernel "$kernel"
+  dv="$(docker version -f '{{.Server.Version}}' 2>/dev/null)"
+  if [ -n "$dv" ]; then info docker "$dv"; else fail docker unreadable; fi
+  cv="$(docker compose version --short 2>/dev/null)"
+  if [ -n "$cv" ]; then info compose "$cv"; else fail compose unreadable; fi
+  c="$(cid edge)"
+  if [ -n "$c" ]; then v="$(docker exec "$c" nginx -v 2>&1 | sed -n 's|.*nginx/||p')"; info nginx "${v:-unknown}"; else warn nginx "no edge container"; fi
+  v="$(pgq 'show server_version' || true)"
+  if [ -n "$v" ]; then info postgres "$v"; else warn postgres "not readable"; fi
+  c="$(cid rabbit)"; [ -n "$c" ] || c="$(cid rabbitmq)"
+  if [ -n "$c" ]; then v="$(docker exec "$c" rabbitmq-diagnostics server_version 2>/dev/null | tail -n1)"; info rabbitmq "${v:-unknown}"; else warn rabbitmq "no container"; fi
+  ctr="$(cid web)"
+  if [ -n "$ctr" ]; then
+    img="$(docker inspect --format '{{.Image}}' "$ctr" 2>/dev/null)"
+    labels="$(docker image inspect --format '{{json .Config.Labels}}' "$img" 2>/dev/null)"
+    local py dj
+    py="$(printf '%s' "$labels" | jq -r '.["org.syncoria.python"] // empty' 2>/dev/null)"
+    dj="$(printf '%s' "$labels" | jq -r '.["org.syncoria.django"] // empty' 2>/dev/null)"
+    if [ -n "$py" ]; then info python "$py"; else warn python "no label on the web image"; fi
+    if [ -n "$dj" ]; then info django "$dj"; else warn django "no label on the web image"; fi
+  else
+    warn web "no container"
+  fi
+  finish
+}
+
+cmd_host() {
+  local post_boot=0
+  [ "${1:-}" != --post-boot ] || post_boot=1
+  need systemctl
+  local v
+  if ufw status 2>/dev/null | grep -q '^Status: active'; then pass ufw active; else fail ufw "not active"; fi
+  if [ "$(systemctl is-active fail2ban 2>/dev/null)" = active ]; then pass fail2ban active; else fail fail2ban "not active"; fi
+  if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = yes ]; then pass time_sync synchronized; else fail time_sync "not synchronized"; fi
+  if unattended-upgrade --dry-run >/dev/null 2>&1; then pass unattended_upgrades "dry run clean"; else fail unattended_upgrades "dry run failed"; fi
+  if jq -e '(."log-driver" != null) and (."log-opts"["max-size"] != null)' "$RFS/etc/docker/daemon.json" >/dev/null 2>&1; then
+    pass docker_log_rotation "daemon.json sets driver and max-size"
+  else fail docker_log_rotation "daemon.json lacks log-driver or max-size"; fi
+  if grep -rhEq '^[[:space:]]*SystemMaxUse=' "$RFS/etc/systemd/journald.conf" "$RFS/etc/systemd/journald.conf.d" 2>/dev/null; then
+    pass journald_cap "SystemMaxUse is set"
+  else fail journald_cap "no SystemMaxUse in journald.conf"; fi
+  if [ -n "$(swapon --show --noheadings 2>/dev/null)" ]; then pass swap present; else fail swap "none"; fi
+  if id ghrunner >/dev/null 2>&1; then fail ghrunner_user "exists"; else pass ghrunner_user absent; fi
+  if systemctl list-units --all --no-legend 'actions.runner*' 2>/dev/null | grep -q .; then fail runner_service "a runner service exists"; else pass runner_service absent; fi
+
+  if [ "$post_boot" -eq 1 ]; then
+    local mnt="$OS_SRV/pgdata" marker want_id want_env got_id got_env
+    if findmnt -rn "$mnt" >/dev/null 2>&1; then pass pgdata_mount "$mnt is a mountpoint"; else fail pgdata_mount "$mnt is not a mountpoint"; fi
+    # marker: one line `volume_id=<id> env=<env>`, written by odoosync-pgdata-init; expected id from /etc/odoosync/env
+    marker="$(cat "$mnt/VOLUME_ID" 2>/dev/null)"
+    want_id="$(envval OMNISYNC_PGDATA_VOLUME_ID)"; want_env="$DEPLOY_ENV"
+    got_id="$(printf '%s' "$marker" | sed -n 's/.*volume_id=\([^ ]*\).*/\1/p')"
+    got_env="$(printf '%s' "$marker" | sed -n 's/.*env=\([^ ]*\).*/\1/p')"
+    if [ -z "$want_id" ]; then fail volume_id "no OMNISYNC_PGDATA_VOLUME_ID in the env file"
+    elif [ -z "$got_id" ]; then fail volume_id "no marker file"
+    elif [ "$got_id" = "$want_id" ] && [ "$got_env" = "$want_env" ]; then pass volume_id "matches this environment"
+    else fail volume_id "marker does not match the expected volume or environment"; fi
+    v="$(pgq "select count(*) from pg_database where datcollversion is not null and datcollversion <> pg_database_collation_actual_version(oid)" || true)"
+    if [ -z "$v" ]; then warn collation "not readable"
+    elif [ "$v" = 0 ]; then pass collation "versions equal"
+    else warn collation "$v database(s) differ from the library's collation version: plan a REINDEX"; fi
+  fi
+  finish
+}
+
+cmd_smoke() {
+  need docker; need curl
+  local rows name state status n=0 url codes code
+  rows="$(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}}|{{.State}}|{{.Status}}' 2>/dev/null)"
+  if [ -z "$rows" ]; then fail containers "none found for project $PROJECT"; finish; fi
+  while IFS='|' read -r name state status; do
+    [ -n "$name" ] || continue
+    n=$((n + 1))
+    if [ "$state" != running ]; then fail "container:$name" "state $state"
+    elif [[ "$status" == *"(unhealthy)"* || "$status" == *"(health: starting)"* ]]; then fail "container:$name" "not healthy yet"
+    else pass "container:$name" "$state"; fi
+  done <<< "$rows"
+  info containers "$n"
+  local count; count="$(pol '(.verify.smoke // []) | length')"
+  if [ "${count:-0}" -eq 0 ]; then warn smoke_urls "the policy lists none"; fi
+  local i=0
+  while [ "$i" -lt "${count:-0}" ]; do
+    url="$(pol ".verify.smoke[$i].url")"; codes="$(pol ".verify.smoke[$i].expect | join(\" \")")"
+    code="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$url" 2>/dev/null)"
+    if [[ " $codes " == *" $code "* ]]; then pass "url:$url" "$code"; else fail "url:$url" "got ${code:-none}, expected $codes"; fi
+    i=$((i + 1))
+  done
+  local c; c="$(cid postgres)"
+  if [ -n "$c" ]; then
+    if docker exec "$c" pg_isready -q >/dev/null 2>&1; then pass postgres_ready; else fail postgres_ready "pg_isready failed"; fi
+  fi
+  finish
+}
+
+cmd_security() {
+  need ss; need docker
+  local allowed addr port bad=0 pub ports seen=" "
+  allowed="$(pol '(.verify.public_ports // [22,80,443]) | map(tostring) | join(" ")')"
+  info allowed_public_ports "$allowed"
+  while read -r addr; do
+    [ -n "$addr" ] || continue
+    port="${addr##*:}"
+    case "$addr" in 127.*|"[::1]"*|"localhost"*) continue ;; esac
+    case "$addr" in *%lo:*) continue ;; esac
+    [[ "$seen" != *" $port "* ]] || continue
+    seen="$seen$port "
+    if [[ " $allowed " != *" $port "* ]]; then fail "listen:$port" "public listener not in the policy"; bad=1; fi
+  done < <(ss -ltnH 2>/dev/null | awk '{print $4}' | sort -u)
+  [ "$bad" -eq 1 ] || pass public_listeners "only the allowed ports"
+  if ss -ltnH 2>/dev/null | awk '{print $4}' | grep -Eq '^(0\.0\.0\.0|\[::\]|\*):5432$'; then fail database_port "5432 is open publicly"; else pass database_port "5432 not public"; fi
+  # Docker publishes bypass ufw: list the ones that are not on loopback and not allowed
+  ports="$(docker ps --format '{{.Ports}}' 2>/dev/null | tr ',' '\n' | sed -n 's/^ *\(0\.0\.0\.0\|\[::\]\):\([0-9]*\)->.*/\2/p' | sort -u)"
+  pub=0
+  for port in $ports; do
+    if [[ " $allowed " != *" $port "* ]]; then fail "docker_publish:$port" "published on all interfaces, not in the policy"; pub=1; fi
+  done
+  [ "$pub" -eq 1 ] || pass docker_publishes "none outside the policy"
+  finish
+}
+
+case "${1:-}" in
+  versions) cmd_versions ;;
+  host) shift; cmd_host "$@" ;;
+  smoke) cmd_smoke ;;
+  security) cmd_security ;;
+  parity|flags|readiness) echo "odoosync-verify: '$1' is not implemented yet" >&2; exit 2 ;;
+  *) echo "usage: odoosync-verify versions | host [--post-boot] | smoke | security" >&2; exit 2 ;;
+esac
