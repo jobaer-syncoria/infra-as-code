@@ -79,11 +79,12 @@ make_stubs() {
   cat > "$STUBS/cosign" <<'COSIGN_END'
 #!/usr/bin/env bash
 # stand-in for cosign: succeeds only when the identity asked for equals STUB_COSIGN_OK_IDENTITY
-[ -z "${STUB_COSIGN_FAIL:-}" ] || exit 1
+[ -z "${STUB_COSIGN_FAIL:-}" ] || { echo "Error: ${STUB_COSIGN_FAIL}" >&2; exit 1; }
 while [ $# -gt 0 ]; do
   if [ "$1" = --certificate-identity ] && [ "$2" = "${STUB_COSIGN_OK_IDENTITY:-}" ]; then exit 0; fi
   shift
 done
+echo "Error: no matching signatures" >&2
 exit 1
 COSIGN_END
   cat > "$STUBS/docker" <<'DOCKER_END'
@@ -92,7 +93,7 @@ COSIGN_END
 printf '%s\n' "$*" >> "$STUB_DOCKER_LOG"
 case "$1" in
   pull) [ -z "${STUB_PULL_FAIL:-}" ] || exit 1 ;;
-  buildx) [ -z "${STUB_REGISTRY_FAIL:-}" ] || exit 1; printf '%s\n' "${STUB_REGISTRY_DIGEST:-}" ;;
+  buildx) [ -z "${STUB_REGISTRY_FAIL:-}" ] || { echo "ERROR: ${STUB_REGISTRY_FAIL}" >&2; exit 1; }; printf '%s\n' "${STUB_REGISTRY_DIGEST:-}" ;;
   image) printf '%s\n' "$STUB_LABELS" ;;
   ps) [ -n "${STUB_NO_PG:-}" ] || echo cid-pg ;;
   exec) printf '%s\n' "$STUB_PGVER" ;;

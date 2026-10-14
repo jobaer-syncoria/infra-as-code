@@ -122,6 +122,10 @@ stamp() { git -C "$WORK" -c gpg.format=ssh -c "user.signingkey=$2" tag -s -m x "
   [ "$status" -eq 1 ]; [[ "$output" == *"pull_registry_failed web"* ]]
   [ "$(calls)" -eq 0 ]
 }
+@test "registry failure: the log carries the registry client's own reason (no credential is ever logged)" {
+  STUB_REGISTRY_FAIL="mkdir /root/.docker: read-only file system" run "$PULL"
+  [ "$status" -eq 1 ]; [[ "$output" == *"pull_registry_failed web ERROR: mkdir /root/.docker: read-only file system"* ]]
+}
 @test "registry answer that is not a digest is a failure" {
   STUB_REGISTRY_DIGEST="latest" run "$PULL"
   [ "$status" -eq 1 ]; [[ "$output" == *pull_registry_failed* ]]

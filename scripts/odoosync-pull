@@ -86,8 +86,14 @@ for service in "${services[@]}"; do
     digest="$(jq -r --arg s "$service" '.[$s] // empty' <<<"$relfile")"
     [ -n "$digest" ] || { plog "pull_not_in_release $service"; continue; }
   else
-    digest="$(docker buildx imagetools inspect "${repo}:${rtag}" --format '{{.Manifest.Digest}}' 2>/dev/null | tr -d '[:space:]' || true)"
-    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { plog "pull_registry_failed $service"; exit 1; }
+    regerr="$(mktemp)"
+    digest="$(docker buildx imagetools inspect "${repo}:${rtag}" --format '{{.Manifest.Digest}}' 2>"$regerr" | tr -d '[:space:]' || true)"
+    if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      # the first line of the registry client's own error (it never contains a credential), so a failure explains itself
+      plog "pull_registry_failed $service $(head -n1 "$regerr" | tr -d '\r' | cut -c1-110)"
+      rm -f "$regerr"; exit 1
+    fi
+    rm -f "$regerr"
   fi
   if [ "$digest" = "$(last_ok_digest "$service")" ]; then plog "pull_noop $service"; continue; fi
 
