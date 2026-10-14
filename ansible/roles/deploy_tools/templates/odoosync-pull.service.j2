@@ -14,4 +14,10 @@ TimeoutStartSec=30min
 Nice=10
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectHome=true
+# The registry login lives in /root/.docker. ProtectHome=true hides /root, so docker would run anonymously and every lookup of a private
+# image would fail ("mkdir /root/.docker: read-only file system"). Read-only home, with the docker config folder writable, is enough.
+ProtectHome=read-only
+ReadWritePaths=-/root/.docker -/root/.sigstore
+# a service has no HOME: cosign would not find the registry login (UNAUTHORIZED on a private image)
+Environment=HOME=/root
+Environment=DOCKER_CONFIG=/root/.docker

@@ -176,6 +176,14 @@ refused() { [ "$status" -eq 3 ] && [[ "$output" == *"deploy_refused $1"* ]]; }
   STUB_COSIGN_OK_IDENTITY="$IDENT_BRANCH" request web "$D1" release/ok
   refused signature_invalid
 }
+@test "DEP-05: the refusal carries cosign's own first error line, never anything secret" {
+  STUB_COSIGN_FAIL="GET https://ghcr.io/token: UNAUTHORIZED: authentication required" request web "$D1" release/ok
+  refused signature_invalid
+  [[ "$output" == *"Error: GET https://ghcr.io/token: UNAUTHORIZED"* ]]
+}
+@test "static: real runs point docker and cosign at root's registry login" {
+  grep -q 'export DOCKER_CONFIG=/root/.docker' "$SCRIPTS/lib/common.sh"
+}
 @test "DEP-05: an unsigned image is refused" {
   STUB_COSIGN_FAIL=1 request web "$D1" release/ok
   refused signature_invalid

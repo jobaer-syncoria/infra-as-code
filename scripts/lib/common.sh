@@ -15,6 +15,9 @@ else
   OS_ETC=/etc/odoosync
   OS_SRV=/srv/odoosync
 fi
+# Real (root) runs: docker and cosign must find root's registry login even when a service manager leaves HOME unset (systemd does).
+# cosign, unlike docker, has no fallback and would fail with UNAUTHORIZED on a private image.
+if [ "$OS_TEST" -eq 0 ]; then export DOCKER_CONFIG=/root/.docker; fi
 OS_TRUST="$OS_ETC/trust"
 OS_STATE="$OS_SRV/state"
 OS_RELEASES="$OS_SRV/releases"

@@ -93,8 +93,13 @@ cmd_request() {
     issuer="$(jq -r --arg r "$repo" '.images[$r].issuer // empty' "$policy")"
     { [ -n "$ident" ] && [ -n "$issuer" ]; } || refuse digest_not_listed "$repo"
     need cosign
-    cosign verify --certificate-identity "$ident" --certificate-oidc-issuer "$issuer" "${repo}@${digest}" >/dev/null 2>&1 \
-      || refuse signature_invalid "$repo"
+    cserr="$(mktemp)"
+    if ! cosign verify --certificate-identity "$ident" --certificate-oidc-issuer "$issuer" "${repo}@${digest}" >/dev/null 2>"$cserr"; then
+      # the first line of cosign's own error (no credential is ever in it), so the refusal explains itself
+      reason="$(grep -m1 -E '^(Error|error)' "$cserr" | tr -d '\r' | cut -c1-110 || true)"
+      rm -f "$cserr"; refuse signature_invalid "$repo ${reason}"
+    fi
+    rm -f "$cserr"
   fi
 
   # ---- tier1-baseline override: one digest only, never after E1_FINAL; skips only the label and serving_values checks ----
