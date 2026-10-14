@@ -39,6 +39,6 @@
     url: http://127.0.0.1:8000/
     status_code: [200, 301, 302, 400, 401, 403, 404]
   register: stack_api_up
-  until: stack_api_up.status is defined
+  until: stack_api_up.status is defined and stack_api_up.status in [200, 301, 302, 400, 401, 403, 404]
   retries: 40
   delay: 6
