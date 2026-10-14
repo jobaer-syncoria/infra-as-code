@@ -21,7 +21,7 @@
     set -o pipefail
     f=/srv/odoosync/state/images.env
     [ -f "$f" ] || exit 0
-    grep -oE '^IMAGE_(WEB|WORKER)=' "$f" | sed 's/^IMAGE_//; s/=$//' | tr 'A-Z' 'a-z'
+    grep -oE '^IMAGE_(WEB|WORKER|CLOVER_NODE)=' "$f" | sed 's/^IMAGE_//; s/=$//; s/_/-/g' | tr 'A-Z' 'a-z'
   args:
     executable: /bin/bash
   register: stack_owned
@@ -31,6 +31,8 @@
   ansible.builtin.set_fact:
     stack_signed_web: "{{ 'web' in stack_owned.stdout_lines }}"
     stack_signed_worker: "{{ 'worker' in stack_owned.stdout_lines }}"
+    stack_signed_clover: "{{ 'clover-node' in stack_owned.stdout_lines }}"
+    stack_any_signed: "{{ stack_owned.stdout_lines | length > 0 }}"
 
 - name: Compose file and nginx config (re-rendered every run)
   ansible.builtin.template:
@@ -52,7 +54,7 @@
   ansible.builtin.command:
     cmd: >-
       docker compose -p {{ compose_project }} -f docker-compose.yml
-      {{ '--env-file /srv/odoosync/state/images.env' if (stack_signed_web or stack_signed_worker) else '' }}
+      {{ '--env-file /srv/odoosync/state/images.env' if stack_any_signed else '' }}
       config --services
     chdir: "{{ stack_dir }}"
   become: true
@@ -65,12 +67,13 @@
     stack_start_list: >-
       {{ stack_services.stdout_lines
          | difference(['web'] if stack_signed_web else [])
-         | difference(['worker'] if stack_signed_worker else []) }}
+         | difference(['worker'] if stack_signed_worker else [])
+         | difference(['clover-node'] if stack_signed_clover else []) }}
   ansible.builtin.command:
     cmd: >-
       docker compose -p {{ compose_project }} -f docker-compose.yml
-      {{ '--env-file /srv/odoosync/state/images.env' if (stack_signed_web or stack_signed_worker) else '' }}
-      up -d --build --remove-orphans {{ '--no-deps ' ~ (stack_start_list | join(' ')) if (stack_signed_web or stack_signed_worker) else '' }}
+      {{ '--env-file /srv/odoosync/state/images.env' if stack_any_signed else '' }}
+      up -d --build --remove-orphans {{ '--no-deps ' ~ (stack_start_list | join(' ')) if stack_any_signed else '' }}
     chdir: "{{ stack_dir }}"
   become: true
   become_user: "{{ deploy_user }}"

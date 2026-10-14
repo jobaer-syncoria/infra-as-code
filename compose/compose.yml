@@ -3,7 +3,7 @@
 #   - images come from IMAGE_* (odoosync-deploy writes /srv/odoosync/state/images.env with repo@digest);
 #     a service that was not deployed yet falls back to the image the Ansible stack built locally;
 #   - the env files are host-local secrets that never enter git: STACK_ENV_DIR (set in /etc/odoosync/env) points at them.
-# Only `web` and `worker` are managed here. The other services stay as the Ansible stack role defines them.
+# Only `web`, `worker` and `clover-node` are managed here. The other services stay as the Ansible stack role defines them.
 services:
   web:
     image: ${IMAGE_WEB:-omnisync-stg:local}
@@ -29,3 +29,18 @@ services:
     command: celery -A omnisync worker -l info
     # warm shutdown lets the running email task finish (runbook: -t 120 worker)
     stop_grace_period: 120s
+  # clover-node (Node 16 app, its own signed image). Staging: the UI port is published on all interfaces as in the Ansible stack.
+  # The database, rabbit and mongo services belong to the Ansible stack and are in the same compose project.
+  clover-node:
+    image: ${IMAGE_CLOVER_NODE:-clover-node-stg:local}
+    restart: unless-stopped
+    env_file:
+      - ${STACK_ENV_DIR:-/etc/odoosync/stack}/clover.env
+      - ${STACK_ENV_DIR:-/etc/odoosync/stack}/clover-conn.env
+    ports: ["8081:8081"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8081/',r=>process.exit(r.statusCode===200?0:1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
