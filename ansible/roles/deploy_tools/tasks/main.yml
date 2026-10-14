@@ -1,5 +1,5 @@
 ---
-# Installs the root deploy tools (odoosync-deploy, odoosync-secrets), their trust files and a root-owned clone of the infra repo.
+# Installs the root deploy tools (odoosync-deploy, odoosync-secrets, odoosync-pull, odoosync-verify), their trust files and a root-owned clone of the infra repo.
 # It installs NOTHING until an approver public key is provided: without a key no release tag could ever verify, and the
 # run must not fail the server rebuild. Provide keys with deploy_approver_keys (list) or deploy_approver_keys_file (a file ON THE
 # SERVER with one SSH public key per line). Public keys only; a private key is never needed here.
@@ -68,6 +68,7 @@
         - {src: odoosync-deploy, mode: "0755"}
         - {src: odoosync-secrets, mode: "0755"}
         - {src: odoosync-pull, mode: "0755"}
+        - {src: odoosync-verify, mode: "0755"}
         - {src: lib/common.sh, mode: "0644"}
 
     - name: Put the tools on the root PATH
@@ -75,7 +76,7 @@
         src: "{{ deploy_tools_dir }}/{{ item }}"
         dest: "/usr/local/sbin/{{ item }}"
         state: link
-      loop: [odoosync-deploy, odoosync-secrets, odoosync-pull]
+      loop: [odoosync-deploy, odoosync-secrets, odoosync-pull, odoosync-verify]
 
     - name: Environment file read by the tools (root-owned, not writable by others)
       ansible.builtin.template:

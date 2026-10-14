@@ -122,6 +122,12 @@ deploy_policy:
   pull:
     tag: staging
     services: [worker, web]
+  # odoosync-verify: ports that may listen on all interfaces (Docker publishes bypass ufw; staging shows Grafana 3001 and Clover 8081
+  # on purpose) and the URLs `smoke` must see answering
+  verify:
+    public_ports: [22, 80, 3001, 8081]
+    smoke:
+      - {url: "http://127.0.0.1:8000/admin/login/", expect: [200, 302]}
 # automatic deploys: a timer runs odoosync-pull. Staging yes; production only by a deliberate decision.
 deploy_pull_enabled: true
 deploy_pull_interval: 2min

@@ -55,3 +55,20 @@
   args:
     executable: /bin/bash
   changed_when: false
+
+- name: Cap the systemd journal so logs cannot fill the disk (odoosync-verify host checks it; the size is an assumption)
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/50-odoosync-cap.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Journal]
+      SystemMaxUse=500M
+  register: base_journald_cap
+
+- name: Apply the journal cap
+  when: base_journald_cap.changed
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted
