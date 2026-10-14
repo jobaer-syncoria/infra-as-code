@@ -24,7 +24,7 @@ docker_daemon_config:
 
 # --- ssh and firewall --------------------------------------------------------------------------------------------
 ssh_permit_root_login: "no"          # the first run happens as root; from then on log in as the deploy user
-ufw_allow_tcp: [22, 80, 443]
+ufw_allow_tcp: [22, 80, 443]   # 8081 and the Grafana port are added below when they are public
 expose_clover_ui: true               # also opens 8081 in ufw. NOTE: Docker-published ports bypass ufw; the DigitalOcean
                                      # Cloud Firewall (terraform) is the real control. Staging only.
 clover_ui_port: 8081
@@ -76,6 +76,9 @@ mongo_restore_file: /opt/odoosync-restore/clover.archive
 # then http://localhost:3001  (user admin; the generated password is in ~/apps/stack/monitoring.env).
 monitoring_enabled: true
 monitoring_grafana_port: 3001
+# false = loopback only (SSH tunnel). true = published on http://<server-ip>:3001, plain HTTP, staging only. Docker-published
+# ports bypass ufw; the DigitalOcean Cloud Firewall is the real control.
+monitoring_grafana_public: true
 img_prometheus: prom/prometheus:v3.1.0
 img_node_exporter: prom/node-exporter:v1.9.0
 img_cadvisor: gcr.io/cadvisor/cadvisor:v0.55.1  # v0.52 cannot talk to Docker 29 (sees no container names)

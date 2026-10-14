@@ -92,8 +92,13 @@ services:
     image: {{ img_grafana }}
     restart: unless-stopped
     env_file: monitoring.env
+{% if monitoring_grafana_public %}
+    # PUBLIC on http://<server-ip>:{{ monitoring_grafana_port }} (plain HTTP; the login password is the only protection)
+    ports: ["{{ monitoring_grafana_port }}:3000"]
+{% else %}
     # reachable only through an SSH tunnel: ssh -L {{ monitoring_grafana_port }}:127.0.0.1:{{ monitoring_grafana_port }} {{ deploy_user }}@<server>
     ports: ["127.0.0.1:{{ monitoring_grafana_port }}:3000"]
+{% endif %}
     volumes:
       - grafanadata:/var/lib/grafana
       - ./monitoring/grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro

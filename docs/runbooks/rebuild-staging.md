@@ -119,8 +119,11 @@ The run ends with a summary of the URLs and the container list. Then:
 
 ## Monitoring (Grafana), included in the rebuild
 The run also starts Prometheus, node_exporter, cAdvisor and Grafana (switch it off with
-`ANSIBLE_ARGS='-e monitoring_enabled=false'`). **Grafana is not reachable from the internet:** it listens on the server's loopback only.
-Open it through an SSH tunnel from your PC, and leave the tunnel running:
+`ANSIBLE_ARGS='-e monitoring_enabled=false'`).
+**Staging default: Grafana is public on `http://<server-ip>:3001`** (`monitoring_grafana_public: true`): plain HTTP, the generated
+password is the only protection, sign-up and anonymous access are off. For anything but staging set
+`-e monitoring_grafana_public=false`: then it listens on the server's loopback only and you open it through an SSH tunnel
+(leave the tunnel running):
 ```bash
 ssh -i ~/.ssh/id_ed25519_syncoria_dev -N -L 3001:127.0.0.1:3001 syncoria-dev@<server-ip>
 ```
