@@ -14,6 +14,24 @@
   ansible.builtin.include_tasks: monitoring.yml
   when: monitoring_enabled
 
+# Once the pull agent (odoosync-pull / odoosync-deploy) has put a SIGNED image on web or worker, it owns them. A rerun of this role must
+# not rebuild them or point them back at the local build (that silently replaced the signed image on 2026-10-14).
+- name: Which services does the deploy tool already own
+  ansible.builtin.shell: |
+    set -o pipefail
+    f=/srv/odoosync/state/images.env
+    [ -f "$f" ] || exit 0
+    grep -oE '^IMAGE_(WEB|WORKER)=' "$f" | sed 's/^IMAGE_//; s/=$//' | tr 'A-Z' 'a-z'
+  args:
+    executable: /bin/bash
+  register: stack_owned
+  changed_when: false
+
+- name: Remember what the deploy tool owns
+  ansible.builtin.set_fact:
+    stack_signed_web: "{{ 'web' in stack_owned.stdout_lines }}"
+    stack_signed_worker: "{{ 'worker' in stack_owned.stdout_lines }}"
+
 - name: Compose file and nginx config (re-rendered every run)
   ansible.builtin.template:
     src: "{{ item }}.j2"
@@ -30,9 +48,26 @@
 - name: Restore a Clover Mongo archive first, if one was provided
   ansible.builtin.include_tasks: restore_mongo.yml
 
-- name: Build and start the stack (several minutes the first time)
+- name: Which services this role may start
   ansible.builtin.command:
-    cmd: "docker compose -p {{ compose_project }} -f docker-compose.yml up -d --build --remove-orphans"
+    cmd: "docker compose -p {{ compose_project }} -f docker-compose.yml {{ '--env-file /srv/odoosync/state/images.env' if (stack_signed_web or stack_signed_worker) else '' }} config --services"
+    chdir: "{{ stack_dir }}"
+  become: true
+  become_user: "{{ deploy_user }}"
+  register: stack_services
+  changed_when: false
+
+- name: Build and start the stack (several minutes the first time; web and worker are left alone once the deploy tool owns them)
+  vars:
+    stack_start_list: >-
+      {{ stack_services.stdout_lines
+         | difference(['web'] if stack_signed_web else [])
+         | difference(['worker'] if stack_signed_worker else []) }}
+  ansible.builtin.command:
+    cmd: >-
+      docker compose -p {{ compose_project }} -f docker-compose.yml
+      {{ '--env-file /srv/odoosync/state/images.env' if (stack_signed_web or stack_signed_worker) else '' }}
+      up -d --build --remove-orphans {{ '--no-deps ' ~ (stack_start_list | join(' ')) if (stack_signed_web or stack_signed_worker) else '' }}
     chdir: "{{ stack_dir }}"
   become: true
   become_user: "{{ deploy_user }}"
