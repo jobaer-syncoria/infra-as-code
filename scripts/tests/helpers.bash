@@ -1,4 +1,4 @@
-# shellcheck shell=bash
+# shellcheck shell=bash disable=SC2034
 # Test sandbox for the odoosync root tools. Everything lives under a temp dir; nothing touches /etc or /srv.
 # The tools only honour ODOOSYNC_TEST_ROOT when run as a NON-root user (see scripts/lib/common.sh).
 

@@ -10,7 +10,7 @@
 # reachable from the production branch.
 set -Eeuo pipefail
 HERE="$(dirname "$(readlink -f "$0")")"
-# shellcheck source=lib/common.sh
+# shellcheck source=/dev/null
 . "$HERE/lib/common.sh"
 
 usage() {
