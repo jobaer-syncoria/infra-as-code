@@ -37,7 +37,7 @@ jobs:
             echo "== terraform test $m"
             (cd "$m" && terraform init -backend=false -input=false >/dev/null && terraform test)
           done
-      - uses: terraform-linters/setup-tflint@v4
+      - uses: terraform-linters/setup-tflint@v6
       - name: tflint
         run: |
           [ -n "$(find terraform -name '*.tf' -print -quit)" ] || { echo "no terraform yet"; exit 0; }
