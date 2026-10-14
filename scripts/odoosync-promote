@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Run by a RELEASE APPROVER on their own workstation, inside a clone of the infra repo (ADR-08 section 3.9, A8-15).
+#   scripts/odoosync-promote <service> <digest> [--override-status "<reason>"] [--override-restore "<reason>"] [--dry-run]
+# It refuses unless ALL of these hold:
+#   1. cosign verifies the digest with the identity recorded in config/promote.json
+#   2. staging's /_health "release" equals the digest's revision label (staging runs exactly this image)
+#   3. the commit's "sit-staging/regression" status is green (your own `gh` login), or you give --override-status
+#   4. a restore test passed within restore_test_max_age_days (ops/restore-test.json), or you give --override-restore (ADR-11)
+# Then it writes releases/production.json on a branch, notes the checks in releases/promotion-notes.txt and opens a PR.
+# It NEVER signs and NEVER merges: after review you sign the tag with scripts/make-release-tag.sh, whose message carries the notes.
+set -euo pipefail
+
+die() { echo "promote_refused: $*" >&2; exit 3; }
+usage() { echo "usage: odoosync-promote <service> <sha256:digest> [--override-status \"reason\"] [--override-restore \"reason\"] [--dry-run]" >&2; exit 2; }
+
+SERVICE="${1:-}"; DIGEST="${2:-}"
+if [ -z "$SERVICE" ] || [ -z "$DIGEST" ]; then usage; fi
+shift 2
+OV_STATUS=""; OV_RESTORE=""; DRY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --override-status)  OV_STATUS="${2:-}";  [ -n "$OV_STATUS" ]  || usage; shift 2 ;;
+    --override-restore) OV_RESTORE="${2:-}"; [ -n "$OV_RESTORE" ] || usage; shift 2 ;;
+    --dry-run) DRY=1; shift ;;
+    *) usage ;;
+  esac
+done
+[[ "$SERVICE" =~ ^[a-z][a-z0-9-]*$ ]] || die "bad_service"
+[[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || die "bad_digest"
+for t in jq git cosign docker curl gh; do command -v "$t" >/dev/null 2>&1 || die "missing_tool $t"; done
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not_in_a_git_repo"
+cd "$ROOT"
+CONF=config/promote.json
+[ -f "$CONF" ] || die "no_config"
+cfg() { jq -er "$1" "$CONF"; }
+cfg ".services[\"$SERVICE\"]" >/dev/null 2>&1 || die "unknown_service $SERVICE"
+REPO="$(cfg ".services[\"$SERVICE\"].repo")"; IDENT="$(cfg ".services[\"$SERVICE\"].identity")"
+ISSUER="$(cfg ".services[\"$SERVICE\"].issuer")"; SRC="$(cfg ".services[\"$SERVICE\"].source_repo")"
+HEALTH_URL="$(cfg ".services[\"$SERVICE\"].staging_health_url")"; HEALTH_FIELD="$(cfg ".services[\"$SERVICE\"].health_field")"
+CONTEXT="$(cfg .status_context)"; RT_FILE="$(cfg .restore_test_record)"; RT_MAX="$(cfg .restore_test_max_age_days)"
+
+# the working tree must be clean and level with origin/production, so the PR contains only this change
+[ -z "$(git status --porcelain)" ] || die "working_tree_not_clean"
+git fetch --quiet origin production || die "fetch_failed"
+BASE="$(git rev-parse origin/production)"
+
+# 1. signature identity
+CERR="$(mktemp)"; trap 'rm -f "$CERR"' EXIT
+cosign verify --certificate-identity "$IDENT" --certificate-oidc-issuer "$ISSUER" "${REPO}@${DIGEST}" >/dev/null 2>"$CERR" \
+  || die "signature_invalid $(head -n1 "$CERR" | cut -c1-200)"
+echo "ok  signature: $REPO@${DIGEST:0:19}... signed by the release workflow"
+
+# 2. staging runs this digest: the image's revision label must equal what staging reports
+REV="$(docker buildx imagetools inspect "${REPO}@${DIGEST}" --format '{{json .Image}}' 2>/dev/null \
+      | jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' 2>/dev/null)" || REV=""
+[ -n "$REV" ] || die "no_revision_label"
+RUNNING="$(curl -fsS --max-time 15 "$HEALTH_URL" 2>/dev/null | jq -r ".${HEALTH_FIELD} // empty" 2>/dev/null)" || RUNNING=""
+[ -n "$RUNNING" ] || die "staging_unreachable $HEALTH_URL"
+[ "$RUNNING" = "$REV" ] || die "staging_runs_other_revision staging=${RUNNING:0:12} digest=${REV:0:12}"
+echo "ok  staging runs revision ${REV:0:12}"
+
+# 3. regression status on that commit
+STATE="$(gh api "repos/$SRC/commits/$REV/statuses" 2>/dev/null \
+        | jq -r --arg c "$CONTEXT" '[.[] | select(.context==$c)][0].state // "missing"' 2>/dev/null)" || STATE="unreadable"
+NOTES=("service: $SERVICE" "digest: $DIGEST" "revision: $REV" "signature: verified ($IDENT)" "staging: runs $REV")
+if [ "$STATE" = success ]; then
+  echo "ok  $CONTEXT is green"; NOTES+=("$CONTEXT: success")
+elif [ -n "$OV_STATUS" ]; then
+  echo "!!  $CONTEXT is $STATE; override recorded"; NOTES+=("$CONTEXT: $STATE; OVERRIDE by approver: $OV_STATUS")
+else
+  die "regression_status_$STATE (give --override-status \"reason\" to record an override)"
+fi
+
+# 4. restore-test gate (ADR-11 3.4, INFRA-PG-11-10)
+RT_RESULT="$(jq -r '.last_result // "none"' "$RT_FILE" 2>/dev/null)" || RT_RESULT="none"
+RT_DATE="$(jq -r '.last_date // empty' "$RT_FILE" 2>/dev/null)" || RT_DATE=""
+AGE=""
+if [ -n "$RT_DATE" ] && RT_EPOCH="$(date -d "$RT_DATE" +%s 2>/dev/null)"; then AGE=$(( ( $(date +%s) - RT_EPOCH ) / 86400 )); fi
+if [ "$RT_RESULT" = passed ] && [ -n "$AGE" ] && [ "$AGE" -ge 0 ] && [ "$AGE" -le "$RT_MAX" ]; then
+  echo "ok  restore test passed ${AGE} days ago"; NOTES+=("restore test: passed $RT_DATE")
+elif [ -n "$OV_RESTORE" ]; then
+  echo "!!  restore test is ${RT_RESULT}/${AGE:-unknown} days; override recorded"
+  NOTES+=("restore test: $RT_RESULT $RT_DATE; OVERRIDE by approver: $OV_RESTORE")
+else
+  die "restore_test_${RT_RESULT}_age_${AGE:-unknown} (give --override-restore \"reason\" to record an override)"
+fi
+
+if [ "$DRY" -eq 1 ]; then echo "dry run: all checks done, nothing written"; exit 0; fi
+
+# write the pin on a branch from origin/production
+BR="promote/${SERVICE}-$(date +%Y%m%d)-${DIGEST:7:8}"
+git switch -q -c "$BR" "$BASE"
+jq --arg s "$SERVICE" --arg d "$DIGEST" '.[$s]=$d' releases/production.json > releases/production.json.new
+mv releases/production.json.new releases/production.json
+printf '%s\n' "${NOTES[@]}" > releases/promotion-notes.txt
+git add releases/production.json releases/promotion-notes.txt
+git commit -q -m "promote $SERVICE to ${DIGEST:0:19}" -m "$(printf '%s\n' "${NOTES[@]}")"
+git push -q origin "$BR"
+gh pr create --base production --head "$BR" --title "Promote $SERVICE to ${DIGEST:0:19}" --body "$(printf 'Checks recorded by odoosync-promote:\n\n%s\n\nNot signed, not merged. After review and merge, an approver signs the release tag with scripts/make-release-tag.sh.\n' "$(printf -- '- %s\n' "${NOTES[@]}")")"
+echo "PR opened. Next: review, merge, then scripts/make-release-tag.sh release/<yyyymmdd>-<n> <key>"
