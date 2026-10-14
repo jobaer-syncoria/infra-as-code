@@ -40,6 +40,8 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 echo "== 3/4 copy the bundles and the infra code to the server ($R)"
 ssh "${SSH_OPTS[@]}" "$R" "mkdir -p '$BUNDLES' '$INFRA'"
+# a first run as root leaves these folders root-owned; the deploy user must be able to refresh them on every rerun
+[ "$USER_" = root ] || ssh "${SSH_OPTS[@]}" "$R" "sudo chown -R '$USER_': '$BUNDLES' '$INFRA'"
 tar -C "$TMP/bundles" -cf - . | ssh "${SSH_OPTS[@]}" "$R" "tar -C '$BUNDLES' -xf -"
 tar -C "$HERE" --exclude=.git --exclude=collections --exclude=__pycache__ -cf - ansible scripts | ssh "${SSH_OPTS[@]}" "$R" "tar -C '$INFRA' -xf -"
 

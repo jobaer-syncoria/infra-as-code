@@ -16,8 +16,12 @@ services:
     env_file: infra.env
     hostname: rabbit
   web:
+{% if stack_signed_web | default(false) %}
+    image: ${IMAGE_WEB}
+{% else %}
     build: ../omnisync-py312
     image: omnisync-stg:local
+{% endif %}
     restart: unless-stopped
     env_file: omnisync.env
     # the committed gunicorn config (gthread, 3 x 16, path-only access log); migrate first
@@ -27,7 +31,11 @@ services:
     ports: ["127.0.0.1:8000:8000"]
     depends_on: {postgres: {condition: service_healthy}, rabbit: {condition: service_started}}
   worker:
+{% if stack_signed_worker | default(false) %}
+    image: ${IMAGE_WORKER}
+{% else %}
     image: omnisync-stg:local
+{% endif %}
     restart: unless-stopped
     env_file: omnisync.env
     command: celery -A omnisync worker -l info
