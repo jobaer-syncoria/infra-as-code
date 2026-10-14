@@ -1,0 +1,25 @@
+---
+# Restore a Clover Mongo archive into the local mongo container of an ALREADY BUILT staging server (no root needed).
+# The archive must be on the server at mongo_restore_file (default ~/odoosync-restore/clover.archive). Replaces the clover database.
+#   /opt/ansible-venv/bin/ansible-playbook playbooks/mongo-restore.yml -e ansible_become=false
+- name: Restore the Clover Mongo archive on an existing staging server
+  hosts: staging
+  become: false
+  vars:
+    mongo_restore_file: "/home/{{ deploy_user }}/odoosync-restore/clover.archive"
+  tasks:
+    - name: Facts (which Mongo is in use) and the connection env file
+      ansible.builtin.include_role:
+        name: stack
+        tasks_from: env.yml
+
+    - name: Restore the archive (skipped when it was already restored; delete ~/apps/stack/.mongo-restored to force)
+      ansible.builtin.include_role:
+        name: stack
+        tasks_from: restore_mongo.yml
+
+    - name: Restart clover-node so it reads the restored data and policies fresh
+      ansible.builtin.command:
+        cmd: "docker compose -p {{ compose_project }} -f docker-compose.yml restart clover-node"
+        chdir: "{{ stack_dir }}"
+      changed_when: true
