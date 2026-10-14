@@ -3,7 +3,7 @@
 #   - images come from IMAGE_* (odoosync-deploy writes /srv/odoosync/state/images.env with repo@digest);
 #     a service that was not deployed yet falls back to the image the Ansible stack built locally;
 #   - the env files are host-local secrets that never enter git: STACK_ENV_DIR (set in /etc/odoosync/env) points at them.
-# Only `web`, `worker` and `clover-node` are managed here. The other services stay as the Ansible stack role defines them.
+# Only `web`, `worker`, `clover-node` and `admin-web` are managed here. The other services stay as the Ansible stack role defines them.
 services:
   web:
     image: ${IMAGE_WEB:-omnisync-stg:local}
@@ -44,3 +44,13 @@ services:
       timeout: 5s
       retries: 6
       start_period: 30s
+  # admin-web: the admin UI (nginx-unprivileged, port 8080). The edge nginx of the Ansible stack proxies to it by this name.
+  admin-web:
+    image: ${IMAGE_ADMIN_WEB:-admin-stg:local}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
