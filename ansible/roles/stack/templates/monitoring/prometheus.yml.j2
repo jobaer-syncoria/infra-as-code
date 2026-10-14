@@ -1,0 +1,11 @@
+# Managed by Ansible (role stack). Scrapes the host, the containers and Prometheus itself.
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+scrape_configs:
+  - job_name: prometheus
+    static_configs: [{targets: ["localhost:9090"]}]
+  - job_name: host
+    static_configs: [{targets: ["node-exporter:9100"]}]
+  - job_name: containers
+    static_configs: [{targets: ["cadvisor:8080"]}]

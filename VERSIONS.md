@@ -35,6 +35,7 @@ file that uses them is written (PI.3 to PI.7) with `docker buildx imagetools ins
 | 23 | Deploy agent | root `odoosync-pull` systemd timer; no CI runner on either droplet | n/a | |
 | 24 | Image signing | cosign (Sigstore), keyless with GitHub OIDC | sha256 of the release binary: UNRESOLVED | version = latest release at C-08-06, pinned by checksum here |
 | 25 | WAL-G (ADR-11 3.1) | version PROPOSED, pinned by version and sha256 like cosign | sha256: UNRESOLVED | |
+| 26 | Monitoring (staging, optional) | Prometheus v3.1.0, node_exporter v1.9.0, cAdvisor v0.55.1 (v0.52 cannot talk to Docker 29), Grafana 11.5.1 | UNRESOLVED | PROPOSED, not in the ADR matrix: set in `ansible/.../group_vars/all.yml`; needs an ADR-08 amendment before production |
 
 ## pins (read by scripts/check-versions)
 

@@ -69,8 +69,44 @@ services:
     network_mode: "service:clover-node"
     command: TCP-LISTEN:8000,fork,reuseaddr TCP:web:8000
     depends_on: [clover-node, web]
+{% if monitoring_enabled %}
+  prometheus:
+    image: {{ img_prometheus }}
+    restart: unless-stopped
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=15d"]
+    volumes: ["./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro", "promdata:/prometheus"]
+  node-exporter:
+    image: {{ img_node_exporter }}
+    restart: unless-stopped
+    pid: host
+    command: ["--path.rootfs=/host", "--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker|var/lib/containerd)($$|/)"]
+    volumes: ["/:/host:ro,rslave"]
+  cadvisor:
+    image: {{ img_cadvisor }}
+    restart: unless-stopped
+    privileged: true
+    command: ["--docker_only=true", "--housekeeping_interval=30s", "--store_container_labels=false"]
+    devices: ["/dev/kmsg"]
+    volumes: ["/:/rootfs:ro", "/var/run:/var/run:ro", "/sys:/sys:ro", "/var/lib/docker/:/var/lib/docker:ro", "/dev/disk/:/dev/disk:ro"]
+  grafana:
+    image: {{ img_grafana }}
+    restart: unless-stopped
+    env_file: monitoring.env
+    # reachable only through an SSH tunnel: ssh -L {{ monitoring_grafana_port }}:127.0.0.1:{{ monitoring_grafana_port }} {{ deploy_user }}@<server>
+    ports: ["127.0.0.1:{{ monitoring_grafana_port }}:3000"]
+    volumes:
+      - grafanadata:/var/lib/grafana
+      - ./monitoring/grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+      - ./monitoring/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/staging.yml:ro
+      - ./monitoring/staging-overview.json:/var/lib/grafana/dashboards/staging-overview.json:ro
+    depends_on: [prometheus]
+{% endif %}
 volumes:
 {% if not stack_external_mongo %}
   mongodata:
 {% endif %}
   pgdata17:
+{% if monitoring_enabled %}
+  promdata:
+  grafanadata:
+{% endif %}

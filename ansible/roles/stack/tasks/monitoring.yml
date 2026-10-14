@@ -1,0 +1,47 @@
+---
+- name: Monitoring config folder
+  ansible.builtin.file:
+    path: "{{ stack_dir }}/monitoring"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0755"
+
+- name: Does the Grafana env file exist already (a rerun keeps the password)
+  ansible.builtin.stat:
+    path: "{{ stack_dir }}/monitoring.env"
+  register: stack_monenv
+
+- name: Make a Grafana admin password, only on the first run
+  ansible.builtin.set_fact:
+    stack_grafana_password: "{{ lookup('ansible.builtin.password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+  when: not stack_monenv.stat.exists
+  no_log: true
+
+- name: Grafana env file (created once, mode 0600)
+  ansible.builtin.template:
+    src: monitoring/monitoring.env.j2
+    dest: "{{ stack_dir }}/monitoring.env"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0600"
+    force: false
+  when: not stack_monenv.stat.exists
+  no_log: true
+
+- name: Prometheus and Grafana config (re-rendered every run)
+  ansible.builtin.template:
+    src: "monitoring/{{ item }}.j2"
+    dest: "{{ stack_dir }}/monitoring/{{ item }}"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0644"
+  loop: [prometheus.yml, grafana-datasource.yml, grafana-dashboards.yml]
+
+- name: The dashboard
+  ansible.builtin.copy:
+    src: monitoring/staging-overview.json
+    dest: "{{ stack_dir }}/monitoring/staging-overview.json"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0644"

@@ -70,3 +70,13 @@ clover_production_db_host: ""
 # If this file exists and the local mongo has not been restored yet, it is restored (mongorestore --archive --gzip --drop)
 # before clover-node starts. The PC script uploads it when you set MONGO_DUMP=/path/to/archive. Not used with a cloud Mongo.
 mongo_restore_file: /opt/odoosync-restore/clover.archive
+
+# --- monitoring: Grafana + Prometheus + node_exporter + cAdvisor (host and containers) ---------------------------------------
+# Grafana listens on 127.0.0.1 only. Open it through an SSH tunnel:  ssh -L 3001:127.0.0.1:3001 syncoria-dev@<server>
+# then http://localhost:3001  (user admin; the generated password is in ~/apps/stack/monitoring.env).
+monitoring_enabled: true
+monitoring_grafana_port: 3001
+img_prometheus: prom/prometheus:v3.1.0
+img_node_exporter: prom/node-exporter:v1.9.0
+img_cadvisor: gcr.io/cadvisor/cadvisor:v0.55.1  # v0.52 cannot talk to Docker 29 (sees no container names)
+img_grafana: grafana/grafana:11.5.1

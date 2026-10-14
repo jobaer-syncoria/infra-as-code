@@ -117,6 +117,22 @@ The run ends with a summary of the URLs and the container list. Then:
   app id and app secret come from the Clover developer dashboard.
 - Restore old data only if you need it (the dumps from "Before you start").
 
+## Monitoring (Grafana), included in the rebuild
+The run also starts Prometheus, node_exporter, cAdvisor and Grafana (switch it off with
+`ANSIBLE_ARGS='-e monitoring_enabled=false'`). **Grafana is not reachable from the internet:** it listens on the server's loopback only.
+Open it through an SSH tunnel from your PC, and leave the tunnel running:
+```bash
+ssh -i ~/.ssh/id_ed25519_syncoria_dev -N -L 3001:127.0.0.1:3001 syncoria-dev@<server-ip>
+```
+then browse to `http://localhost:3001`, user `admin`. The generated password is on the server (read it in your own terminal):
+```bash
+ssh syncoria-dev@<server-ip> 'grep GF_SECURITY_ADMIN_PASSWORD ~/apps/stack/monitoring.env'
+```
+Dashboard **Staging server overview**: host CPU, memory, swap, disk, load, uptime, and per container CPU, memory, network and
+uptime. Data is kept 15 days. The host network card is not shown (node_exporter runs in a container); per container network is.
+Not included yet: RabbitMQ and PostgreSQL metrics. Memory cost is about 400 to 600 MB; on a small server turn it off.
+Docker 29 needs cAdvisor v0.55 or newer, or no container names appear.
+
 ## If something fails
 Read the last error in the output. Fix it, then run the same command again.
 
