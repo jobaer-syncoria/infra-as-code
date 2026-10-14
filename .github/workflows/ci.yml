@@ -73,7 +73,7 @@ jobs:
       - name: shellcheck
         run: |
           files=$(grep -rIl --exclude-dir=.git -E '^#!.*(ba)?sh' scripts ci cloud-init 2>/dev/null || true)
-          [ -z "$files" ] || shellcheck $files
+          [ -z "$files" ] || shellcheck -x -P SCRIPTDIR $files $(ls scripts/lib/*.sh 2>/dev/null)
       - name: bats
         run: |
           [ -n "$(find scripts -name '*.bats' -print -quit 2>/dev/null)" ] || { echo "no bats tests yet"; exit 0; }

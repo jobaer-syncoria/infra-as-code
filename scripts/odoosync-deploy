@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# odoosync-deploy: root tool that applies ONLY signed changes (ADR-08 3.9).
+#
+# STATUS: slice 1 of PI.5. Implemented: `request` with every guard (checks 1-6 of 3.9), each refusal tested in
+# scripts/tests/deploy_guards.bats. NOT implemented yet: the apply step (blue/green, recreate, CCD, rollback, flags, jobs,
+# stop). A request that passes every guard therefore exits 78 ("apply not implemented") unless --check-only is given.
+#
+# Trust model: nothing a non-root user can write is ever read. Two things authorise a change: an image signature proving the
+# image was built by the named repo's release.yml on refs/heads/production, and a git tag signed by a release approver and
+# reachable from the production branch.
+set -Eeuo pipefail
+HERE="$(dirname "$(readlink -f "$0")")"
+# shellcheck source=lib/common.sh
+. "$HERE/lib/common.sh"
+
+usage() {
+  cat >&2 <<USAGE
+usage: odoosync-deploy request --env /etc/odoosync/env --service <name> --digest sha256:<64 hex> --ref <tag>
+                               [--manual] [--override tier1-baseline] [--check-only]
+USAGE
+  exit 2
+}
+
+SERVICES_RE='^(web|web-terminal|worker|admin-web|edge|rabbitmq|pgbackup|postgres|clover-node)$'
+
+cmd_request() {
+  local env_arg="" service="" digest="" ref="" manual=0 override="" check_only=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --env) env_arg="${2:-}"; shift 2 ;;
+      --service) service="${2:-}"; shift 2 ;;
+      --digest) digest="${2:-}"; shift 2 ;;
+      --ref) ref="${2:-}"; shift 2 ;;
+      --manual) manual=1; shift ;;
+      --override) override="${2:-}"; shift 2 ;;
+      --check-only) check_only=1; shift ;;
+      *) refuse bad_args "unknown_option" ;;
+    esac
+  done
+
+  # ---- 1. arguments match a fixed grammar -----------------------------------------------------------------------------
+  [ "$env_arg" = /etc/odoosync/env ] || refuse bad_args env
+  [[ "$service" =~ $SERVICES_RE ]] || refuse bad_args service
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || refuse bad_args digest
+  [[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$ ]] && [[ "$ref" != *..* ]] || refuse bad_args ref
+  [ -z "$override" ] || [ "$override" = tier1-baseline ] || refuse bad_args override
+
+  need git; need jq
+  local env_file="$OS_ETC/env" flags="$OS_ETC/flags.env" policy="$OS_TRUST/image-policy.json" signers="$OS_TRUST/allowed_signers"
+
+  # ---- DEPLOY_FREEZE (also a guard of 5) ---------------------------------------------------------------------------------
+  if [ -f "$flags" ] && grep -Eq '^DEPLOY_FREEZE=([^0[:space:]].*|0.+)$' "$flags"; then
+    if [ "$manual" -ne 1 ] || { [ -z "${SUDO_USER:-}" ] && [ "$OS_TEST" -eq 0 ]; }; then refuse freeze; fi
+  fi
+
+  # ---- trust inputs: root-owned, not writable by anyone else -------------------------------------------------------------
+  local f
+  for f in "$env_file" "$policy" "$signers"; do
+    trust_file_ok "$f" || refuse trust_file_unsafe "$(basename "$f")"
+  done
+  if [ -f "$flags" ]; then trust_file_ok "$flags" || refuse trust_file_unsafe flags.env; fi
+  local deploy_env
+  deploy_env="$(sed -n 's/^OMNISYNC_DEPLOY_ENV=//p' "$env_file" | head -n1)"
+  [[ "$deploy_env" =~ ^(production|staging|rehearsal)$ ]] || refuse bad_env deploy_env
+
+  # ---- 2. the configuration: a verified, signed tag reachable from production --------------------------------------------
+  [ -d "$OS_BARE" ] || refuse no_clone
+  git -C "$OS_BARE" rev-parse -q --verify "refs/tags/${ref}" >/dev/null || refuse tag_unknown "$ref"
+  git -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$signers" -C "$OS_BARE" verify-tag "$ref" >/dev/null 2>&1 \
+    || refuse tag_unverified "$ref"
+  git -C "$OS_BARE" merge-base --is-ancestor "refs/tags/${ref}^{commit}" "$OS_PROD_REF" 2>/dev/null \
+    || refuse tag_not_on_production "$ref"
+  local rel="$OS_RELEASES/$ref"
+  rm -rf -- "$rel"; mkdir -p -- "$rel"
+  git -C "$OS_BARE" archive --format=tar "refs/tags/${ref}^{commit}" | tar -x -C "$rel"
+
+  # ---- 3. the image: fixed list, or an upstream image pinned by digest in that tag's compose file ------------------------
+  local repo
+  repo="$(jq -r --arg s "$service" '.services[$s] // empty' "$policy")"
+  [ -n "$repo" ] || refuse digest_not_listed "service_not_in_policy"
+  if jq -e --arg r "$repo" '(.upstream // []) | index($r)' "$policy" >/dev/null; then
+    grep -Fq -- "${repo}@${digest}" "$rel/compose/compose.yml" 2>/dev/null || refuse digest_not_listed "$repo"
+  else
+    local ident issuer
+    ident="$(jq -r --arg r "$repo" '.images[$r].identity // empty' "$policy")"
+    issuer="$(jq -r --arg r "$repo" '.images[$r].issuer // empty' "$policy")"
+    [ -n "$ident" ] && [ -n "$issuer" ] || refuse digest_not_listed "$repo"
+    need cosign
+    cosign verify --certificate-identity "$ident" --certificate-oidc-issuer "$issuer" "${repo}@${digest}" >/dev/null 2>&1 \
+      || refuse signature_invalid "$repo"
+  fi
+
+  # ---- tier1-baseline override: one digest only, never after E1_FINAL; skips only the label and serving_values checks ----
+  local skip_label_sv=0
+  if [ "$override" = tier1-baseline ]; then
+    [ ! -e "$OS_STATE/E1_FINAL" ] || refuse tier1_after_final
+    trust_file_ok "$OS_TRUST/tier1-baseline.digest" || refuse trust_file_unsafe tier1-baseline.digest
+    [ "$(tr -d '[:space:]' < "$OS_TRUST/tier1-baseline.digest")" = "$digest" ] || refuse tier1_digest_mismatch
+    skip_label_sv=1
+  fi
+
+  # ---- 4. production only ------------------------------------------------------------------------------------------------
+  if [ "$deploy_env" = production ]; then
+    [ "$(jq -r --arg s "$service" '.[$s] // empty' "$rel/releases/production.json" 2>/dev/null)" = "$digest" ] \
+      || refuse prod_digest_mismatch "$service"
+    if [ "$skip_label_sv" -eq 0 ] && jq -e --arg r "$repo" '(.label_checked // []) | index($r)' "$policy" >/dev/null; then
+      need docker
+      local labels py dj
+      labels="$(docker image inspect --format '{{json .Config.Labels}}' "${repo}@${digest}" 2>/dev/null || echo '{}')"
+      py="$(jq -r '.["org.syncoria.python.version"] // "0"' <<<"$labels")"
+      dj="$(jq -r '.["org.syncoria.django.version"] // "0"' <<<"$labels")"
+      version_ge "$py" 3.12 || refuse label_python "$repo"
+      version_ge "$dj" 5.2 || refuse label_django "$repo"
+    fi
+  fi
+
+  # ---- 5. both environments ----------------------------------------------------------------------------------------------
+  if [ "$skip_label_sv" -eq 0 ] && jq -e --arg r "$repo" '(.label_checked // []) | index($r)' "$policy" >/dev/null; then
+    need docker
+    local svpath
+    svpath="$(jq -r '.serving_values_path // "/app/deploy/serving_values.json"' "$policy")"
+    docker run --rm --network none --entrypoint cat "${repo}@${digest}" "$svpath" 2>/dev/null \
+      | cmp -s - "$rel/nginx/serving_values.json" || refuse serving_values "$repo"
+  fi
+  if [ "$service" != postgres ]; then
+    need docker
+    local vnum
+    vnum="$(docker compose -p omnisync exec -T postgres psql -U postgres -Atc 'show server_version_num' 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ "$vnum" =~ ^[0-9]+$ ]] && [ "$vnum" -ge 140000 ] || refuse db_version "${vnum:-unknown}"
+  fi
+
+  printf 'request_ok service=%s digest=%s ref=%s env=%s\n' "$service" "$digest" "$ref" "$deploy_env"
+  if [ "$check_only" -eq 1 ]; then exit 0; fi
+  log "apply is not implemented yet (PI.5 slice 1 delivers the guards only). Nothing was changed."
+  exit 78
+}
+
+[ $# -ge 1 ] || usage
+case "$1" in
+  request) shift; cmd_request "$@" ;;
+  *) usage ;;
+esac
