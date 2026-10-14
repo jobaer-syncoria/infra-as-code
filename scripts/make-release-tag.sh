@@ -20,7 +20,10 @@ echo "About to sign and push $TAG at commit $(git rev-parse --short HEAD): $(git
 read -r -p 'Type "yes" to continue: ' ANS
 [ "$ANS" = yes ] || { echo "cancelled"; exit 1; }
 
-git -c gpg.format=ssh -c "user.signingkey=$KEY" tag -s -m "release $TAG" "$TAG"
+# the message carries the checks odoosync-promote recorded (or the override reasons), so the signature covers them
+MSG=(-m "release $TAG")
+[ ! -s releases/promotion-notes.txt ] || MSG+=(-m "$(cat releases/promotion-notes.txt)")
+git -c gpg.format=ssh -c "user.signingkey=$KEY" tag -s "${MSG[@]}" "$TAG"
 # prove the signature verifies against the key we signed with, before anyone else sees the tag
 SIGNERS="$(mktemp)"; trap 'rm -f "$SIGNERS"' EXIT
 PUB="$KEY"; [[ "$KEY" == *.pub ]] || PUB="$KEY.pub"

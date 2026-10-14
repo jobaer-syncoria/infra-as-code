@@ -1,0 +1,9 @@
+{
+  "services": {
+    "web":    {"repo": "ghcr.io/syncoria/omnisync", "identity": "https://github.com/syncoria/omnisync/.github/workflows/release.yml@refs/heads/production", "issuer": "https://token.actions.githubusercontent.com", "source_repo": "syncoria/omnisync", "staging_health_url": "https://staging.odoosync.com/_health", "health_field": "release"},
+    "worker": {"repo": "ghcr.io/syncoria/omnisync", "identity": "https://github.com/syncoria/omnisync/.github/workflows/release.yml@refs/heads/production", "issuer": "https://token.actions.githubusercontent.com", "source_repo": "syncoria/omnisync", "staging_health_url": "https://staging.odoosync.com/_health", "health_field": "release"}
+  },
+  "status_context": "sit-staging/regression",
+  "restore_test_record": "ops/restore-test.json",
+  "restore_test_max_age_days": 35
+}
