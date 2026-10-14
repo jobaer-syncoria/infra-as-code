@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# odoosync-pull: the root pull agent. A systemd timer runs it every 2 minutes (ADR-08 3.9, runbook PI.5 item 2).
+# It never builds, never holds a secret of its own, and never changes anything itself: every change goes through
+# `odoosync-deploy request`, which applies all of its guards.
+#
+#   1. fetch the infra repo into the root-owned bare clone;
+#   2. take the newest release tag that is SIGNED by an approver key and reachable from the production branch
+#      (unsigned tags, tags signed by other keys and tags not on production are ignored and logged);
+#   3. staging/rehearsal: resolve the registry's moving tag (policy .pull.tag) to a digest for each service;
+#      production: read the digest from releases/production.json at that tag (the registry is never asked);
+#   4. for each service whose digest differs from the last successful release, call `odoosync-deploy request`;
+#      stop at the first failure and leave the retry to the next run;
+#   5. do nothing while DEPLOY_FREEZE is set.
+# One line per decision, to stdout and the journal:  pull_ok | pull_noop | pull_apply | pull_ignored_tag | pull_frozen | pull_busy | ...
+set -Eeuo pipefail
+HERE="$(dirname "$(readlink -f "$0")")"
+# shellcheck source=/dev/null
+. "$HERE/lib/common.sh"
+
+DEPLOY="$HERE/odoosync-deploy"
+# the sandbox may swap the deploy tool for a recorder, only when it is not running as root (see lib/common.sh)
+if [ "$OS_TEST" -eq 1 ] && [ -n "${ODOOSYNC_DEPLOY_BIN:-}" ]; then DEPLOY="$ODOOSYNC_DEPLOY_BIN"; fi
+
+plog() { printf '%s\n' "$*"; logger -t odoosync-pull -- "$*" 2>/dev/null || true; }
+
+need git; need jq; need flock
+
+mkdir -p "$OS_STATE"
+exec 8>"$OS_STATE/pull.lock"
+flock -n 8 || { plog pull_busy; exit 0; }
+
+env_file="$OS_ETC/env"; flags="$OS_ETC/flags.env"; policy="$OS_TRUST/image-policy.json"; signers="$OS_TRUST/allowed_signers"
+for f in "$env_file" "$policy" "$signers"; do
+  trust_file_ok "$f" || { plog "pull_trust_file_unsafe $(basename "$f")"; exit 3; }
+done
+if [ -f "$flags" ]; then
+  trust_file_ok "$flags" || { plog "pull_trust_file_unsafe flags.env"; exit 3; }
+  if grep -Eq '^DEPLOY_FREEZE=([^0[:space:]].*|0.+)$' "$flags"; then plog pull_frozen; exit 0; fi
+fi
+deploy_env="$(sed -n 's/^OMNISYNC_DEPLOY_ENV=//p' "$env_file" | head -n1)"
+[[ "$deploy_env" =~ ^(production|staging|rehearsal)$ ]] || { plog pull_bad_env; exit 3; }
+[ -d "$OS_BARE" ] || { plog pull_no_clone; exit 3; }
+
+# ---- 1. fetch --------------------------------------------------------------------------------------------------------------
+sshkey="$(jq -r '.git_ssh_key // empty' "$policy")"
+if [ -n "$sshkey" ]; then export GIT_SSH_COMMAND="ssh -i $sshkey -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"; fi
+GIT_TERMINAL_PROMPT=0 git -C "$OS_BARE" fetch --prune --quiet origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' 2>/dev/null \
+  || { plog pull_fetch_failed; exit 1; }
+
+# ---- 2. the newest tag that is signed AND on production ------------------------------------------------------------------------
+chosen=""
+while IFS= read -r tag; do
+  [ -n "$tag" ] || continue
+  if ! git -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$signers" -C "$OS_BARE" verify-tag "$tag" >/dev/null 2>&1; then
+    plog "pull_ignored_tag $tag unverified"; continue
+  fi
+  if ! git -C "$OS_BARE" merge-base --is-ancestor "refs/tags/${tag}^{commit}" "$OS_PROD_REF" 2>/dev/null; then
+    plog "pull_ignored_tag $tag not_on_production"; continue
+  fi
+  chosen="$tag"; break
+done < <(git -C "$OS_BARE" tag --list 'release/*' --sort=-version:refname)
+[ -n "$chosen" ] || { plog pull_no_valid_tag; exit 0; }
+
+# ---- 3 and 4. decide per service, apply through odoosync-deploy ---------------------------------------------------------------
+last_ok_digest() {  # the digest of the newest successful release of a service, or empty
+  [ -f "$OS_STATE/releases.jsonl" ] || return 0
+  jq -r --arg s "$1" 'select(.service==$s and .result=="ok") | .digest' "$OS_STATE/releases.jsonl" | tail -n1
+}
+
+mapfile -t services < <(jq -r '(.pull.services // (.services | keys))[]' "$policy")
+[ "${#services[@]}" -gt 0 ] || { plog pull_no_services; exit 0; }
+if [ "$deploy_env" = production ]; then
+  relfile="$(git -C "$OS_BARE" show "refs/tags/${chosen}:releases/production.json" 2>/dev/null || true)"
+  [ -n "$relfile" ] || { plog "pull_no_release_file $chosen"; exit 1; }
+else
+  rtag="$(jq -r '.pull.tag // empty' "$policy")"
+  [ -n "$rtag" ] || { plog pull_no_tag_configured; exit 0; }
+  need docker
+fi
+
+applied=0
+for service in "${services[@]}"; do
+  repo="$(jq -r --arg s "$service" '.services[$s] // empty' "$policy")"
+  [ -n "$repo" ] || { plog "pull_service_not_in_policy $service"; continue; }
+  if [ "$deploy_env" = production ]; then
+    digest="$(jq -r --arg s "$service" '.[$s] // empty' <<<"$relfile")"
+    [ -n "$digest" ] || { plog "pull_not_in_release $service"; continue; }
+  else
+    digest="$(docker buildx imagetools inspect "${repo}:${rtag}" --format '{{.Manifest.Digest}}' 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { plog "pull_registry_failed $service"; exit 1; }
+  fi
+  if [ "$digest" = "$(last_ok_digest "$service")" ]; then plog "pull_noop $service"; continue; fi
+
+  plog "pull_apply $service $digest $chosen"
+  out="$(mktemp)"
+  set +e
+  "$DEPLOY" request --env /etc/odoosync/env --service "$service" --digest "$digest" --ref "$chosen" >"$out" 2>&1
+  rc=$?
+  set -e
+  if grep -q 'deploy_refused busy' "$out"; then rm -f "$out"; plog pull_busy; exit 0; fi   # a person is deploying: next run
+  if [ "$rc" -ne 0 ]; then
+    plog "pull_failed $service rc=$rc $(grep -o 'deploy_refused [a-z_0-9]*\|deploy_failed[^[:cntrl:]]*' "$out" | head -n1)"
+    rm -f "$out"; exit "$rc"
+  fi
+  rm -f "$out"; applied=$(( applied + 1 ))
+done
+plog "pull_ok $chosen applied=$applied"

@@ -1,7 +1,7 @@
 # Deploy to staging with odoosync-deploy
 
-Status: the tools, the Ansible role and the release compose file are built and tested **in containers**. They have **never been run on the staging server**, and
-no image has been deployed through them yet. Read "What is not done" before you rely on this.
+Status: the tools, the pull timer, the Ansible role and the release compose file are built and tested **in containers**. They have **never been run on the
+staging server**, and no image has been deployed through them yet. Read "What is not done" before you rely on this.
 
 ## How a release reaches staging
 1. A merge produces a signed image: the omnisync branch `staging-release` runs the workflow *Release image (staging)* and publishes
@@ -43,6 +43,18 @@ sudo odoosync-deploy request --env /etc/odoosync/env --service web --digest sha2
 ```
 Try a dry run first: add `--check-only` (runs every guard, starts nothing).
 
+## Automatic deploys: the pull timer (staging)
+On staging the role also installs `odoosync-pull` and a systemd timer that runs it **every 2 minutes**. Each run:
+1. fetches the infra repo; takes the newest `release/*` tag that is **signed by an approver and reachable from `production`**
+   (anything else is ignored and logged as `pull_ignored_tag <tag> unverified|not_on_production`);
+2. asks the registry which digest the moving tag `staging` points to, for each service (`worker` first, then `web`);
+3. for each service whose digest differs from the last successful release, runs `odoosync-deploy request` (all guards, then the safe recreate with
+   automatic rollback). It stops at the first failure; the next run retries. It does nothing while `DEPLOY_FREEZE` is set, and skips quietly when a person is deploying.
+Watch it: `journalctl -u odoosync-pull -f` or `systemctl list-timers odoosync-pull.timer`. Stop it: `sudo systemctl disable --now odoosync-pull.timer`
+(or `odoosync-deploy flag set DEPLOY_FREEZE 1`). Log lines: `pull_ok`, `pull_noop`, `pull_apply`, `pull_failed`, `pull_frozen`, `pull_busy`, `pull_no_valid_tag`,
+`pull_registry_failed`, `pull_fetch_failed`. The timer needs the registry login from step 4 of the setup, or it logs `pull_registry_failed`.
+**Production has the timer switched off** (`deploy_pull_enabled: false`) and would read digests from the signed `releases/production.json`, never from the registry.
+
 ## Roll back, stop, freeze
 ```bash
 sudo odoosync-deploy rollback --service web          # previous good release, through every guard again
@@ -52,7 +64,7 @@ sudo odoosync-deploy flag set DEPLOY_FREEZE 1        # blocks every deploy (also
 Every deploy is logged in `/srv/odoosync/state/releases.jsonl` (ok, failed, rolled_back, stopped) with the operator.
 
 ## What is not done
-- **No pull timer yet** (`odoosync-pull`): nothing deploys by itself after a merge; a person runs the command above. `odoosync-promote` and `odoosync-verify` are not built.
+- `odoosync-promote` (the approver's tool that writes `releases/production.json` and opens the PR) and `odoosync-verify` are **not built**; the pull timer is built but has never run on the server.
 - **Only `web` and `worker`** are in the release compose file. The other services (postgres, rabbit, admin, edge, mongo, clover-node, monitoring) stay as
   the Ansible stack role defines them. Until the admin and Clover images are published, they stay locally built.
 - **Zero-drop blue/green is not built.** On staging `web` is simply recreated (a brief gap). **Production refuses** the payment-path services

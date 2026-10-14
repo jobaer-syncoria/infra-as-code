@@ -116,3 +116,10 @@ deploy_policy:
   readiness_timeout: 240
   poll_seconds: 3
   stable_seconds: 10
+  # the pull agent (odoosync-pull): staging follows the registry's moving tag; services in this order
+  pull:
+    tag: staging
+    services: [worker, web]
+# automatic deploys: a timer runs odoosync-pull. Staging yes; production only by a deliberate decision.
+deploy_pull_enabled: true
+deploy_pull_interval: 2min

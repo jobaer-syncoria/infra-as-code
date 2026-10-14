@@ -33,7 +33,7 @@ make_sandbox() {
   export STUB_LABELS='{"org.syncoria.python":"3.12.4","org.syncoria.django":"5.2.1"}'
   export STUB_SERVING_FILE="$WORK/nginx/serving_values.json"
   export STUB_PGVER=170011
-  export STUB_ROOT="$ROOT" STUB_DOCKER_LOG="$ROOT/docker.log"
+  export STUB_ROOT="$ROOT" STUB_DOCKER_LOG="$ROOT/docker.log" ODOOSYNC_DEPLOY_BIN="$STUBS/deploy-recorder"
   : > "$STUB_DOCKER_LOG"
   export STUB_COSIGN_OK_IDENTITY="$IDENT_PROD"
   signed_tag release/ok "$KEYS/approver"
@@ -92,6 +92,7 @@ COSIGN_END
 printf '%s\n' "$*" >> "$STUB_DOCKER_LOG"
 case "$1" in
   pull) [ -z "${STUB_PULL_FAIL:-}" ] || exit 1 ;;
+  buildx) [ -z "${STUB_REGISTRY_FAIL:-}" ] || exit 1; printf '%s\n' "${STUB_REGISTRY_DIGEST:-}" ;;
   image) printf '%s\n' "$STUB_LABELS" ;;
   run) cat "$STUB_SERVING_FILE" ;;
   inspect)
@@ -114,7 +115,14 @@ case "$1" in
 esac
 DOCKER_END
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/logger.log"\n' "$ROOT" > "$STUBS/logger"
-  chmod +x "$STUBS/cosign" "$STUBS/docker" "$STUBS/logger"
+  cat > "$STUBS/deploy-recorder" <<'REC_END'
+#!/usr/bin/env bash
+# stand-in for odoosync-deploy: records its arguments; STUB_DEPLOY_RC sets the exit code; STUB_DEPLOY_BUSY prints the busy refusal
+printf '%s\n' "$*" >> "$STUB_ROOT/deploy.calls"
+[ -z "${STUB_DEPLOY_BUSY:-}" ] || { echo "deploy_refused busy" >&2; exit 3; }
+exit "${STUB_DEPLOY_RC:-0}"
+REC_END
+  chmod +x "$STUBS/cosign" "$STUBS/docker" "$STUBS/logger" "$STUBS/deploy-recorder"
 }
 
 request() {  # request <service> <digest> <ref> [extra args]

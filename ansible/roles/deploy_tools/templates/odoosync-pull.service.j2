@@ -1,0 +1,17 @@
+# Managed by Ansible (role deploy_tools). One run of the pull agent; the timer starts it.
+[Unit]
+Description=odoosync pull agent (verifies signed releases and applies them through odoosync-deploy)
+Documentation=file://{{ deploy_tools_dir }}/odoosync-pull
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/odoosync-pull
+# a deploy waits for the health check (up to the policy's readiness_timeout) and the web stop grace: allow for it
+TimeoutStartSec=30min
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true

@@ -67,6 +67,7 @@
       loop:
         - {src: odoosync-deploy, mode: "0755"}
         - {src: odoosync-secrets, mode: "0755"}
+        - {src: odoosync-pull, mode: "0755"}
         - {src: lib/common.sh, mode: "0644"}
 
     - name: Put the tools on the root PATH
@@ -74,7 +75,7 @@
         src: "{{ deploy_tools_dir }}/{{ item }}"
         dest: "/usr/local/sbin/{{ item }}"
         state: link
-      loop: [odoosync-deploy, odoosync-secrets]
+      loop: [odoosync-deploy, odoosync-secrets, odoosync-pull]
 
     - name: Environment file read by the tools (root-owned, not writable by others)
       ansible.builtin.template:
@@ -163,3 +164,25 @@
     - name: Smoke check, the secrets tool lists names only
       ansible.builtin.command: /usr/local/sbin/odoosync-secrets check
       changed_when: false
+
+    - name: The pull agent service and its timer
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/systemd/system/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: [odoosync-pull.service, odoosync-pull.timer]
+      register: deploy_tools_units
+
+    - name: Reload systemd when a unit changed
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      when: deploy_tools_units.changed and ansible_service_mgr == 'systemd'
+
+    - name: Start the timer (only when automatic deploys are switched on)
+      ansible.builtin.systemd_service:
+        name: odoosync-pull.timer
+        enabled: "{{ deploy_pull_enabled }}"
+        state: "{{ 'started' if deploy_pull_enabled else 'stopped' }}"
+      when: ansible_service_mgr == 'systemd'
