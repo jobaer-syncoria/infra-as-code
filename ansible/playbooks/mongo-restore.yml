@@ -3,7 +3,7 @@
 # The archive must be on the server at mongo_restore_file (default ~/odoosync-restore/clover.archive). Replaces the clover database.
 #   /opt/ansible-venv/bin/ansible-playbook playbooks/mongo-restore.yml -e ansible_become=false
 - name: Restore the Clover Mongo archive on an existing staging server
-  hosts: staging
+  hosts: all
   become: false
   vars:
     mongo_restore_file: "/home/{{ deploy_user }}/odoosync-restore/clover.archive"

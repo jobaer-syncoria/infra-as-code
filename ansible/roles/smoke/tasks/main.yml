@@ -55,6 +55,12 @@
       - "Clover Cloud:    http://{{ public_host_eff }}:{{ clover_ui_port }}/"
       - "Containers:      {{ smoke_ps.stdout_lines }}"
     grafana_lines:
-      - "Grafana:         {{ 'http://' ~ public_host_eff ~ ':' ~ monitoring_grafana_port ~ ' (public)' if monitoring_grafana_public else 'loopback only, use the SSH tunnel below' }}"
-      - "Grafana tunnel (only if not public):  ssh -L {{ monitoring_grafana_port }}:127.0.0.1:{{ monitoring_grafana_port }} {{ deploy_user }}@{{ public_host_eff }}"
-      - "Grafana:         http://localhost:{{ monitoring_grafana_port }} (user admin; password: grep GF_SECURITY_ADMIN_PASSWORD {{ stack_dir }}/monitoring.env)"
+      - >-
+        Grafana:
+        {{ ('http://' ~ public_host_eff ~ ':' ~ monitoring_grafana_port ~ ' (public)')
+        if monitoring_grafana_public else 'loopback only, use the SSH tunnel below' }}
+      - >-
+        Grafana tunnel (only if not public):
+        ssh -L {{ monitoring_grafana_port }}:127.0.0.1:{{ monitoring_grafana_port }} {{ deploy_user }}@{{ public_host_eff }}
+      - >-
+        Grafana login: user admin; password: grep GF_SECURITY_ADMIN_PASSWORD {{ stack_dir }}/monitoring.env

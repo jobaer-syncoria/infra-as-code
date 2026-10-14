@@ -4,7 +4,7 @@
 # are not touched). Run on the server as the deploy user:
 #   /opt/ansible-venv/bin/ansible-playbook playbooks/monitoring.yml -e ansible_become=false
 - name: Monitoring on an existing staging server
-  hosts: staging
+  hosts: all
   become: false
   vars:
     monitoring_enabled: true

@@ -1,0 +1,22 @@
+---
+# PRODUCTION OVERRIDES on top of the staging base (00-base-from-staging.yml is a link to the staging variables; files in this
+# folder load in name order, so these win).
+#
+# NOT AN APPROVED PRODUCTION PATH. The runbook's production design (ADR-08, ADR-09, ADR-11) is different: signed images pulled
+# by a root pull agent (no building on the server), a dedicated database volume with WAL-G backups, an edge nginx, Cloud
+# Firewalls from Terraform, and rules for how the old droplet is rebuilt in place. This file only records what the monitoring
+# and Clover settings must be, so they are not forgotten. Review everything with the engineering lead before any run.
+
+# --- exposure: nothing public that staging leaves open ---------------------------------------------------------------------
+expose_clover_ui: false              # Clover goes through the edge nginx in production, not a published 8081
+monitoring_grafana_public: false     # Grafana on the loopback only: reach it through an SSH tunnel
+monitoring_enabled: true             # PROPOSED: Grafana is not in the ADR monitoring plan (New Relic, DO alerts, pgwatch)
+
+# --- Clover: cloud Mongo (Atlas) and the production guard ---------------------------------------------------------------------
+clover_deploy_env: production
+# The production Atlas HOST NAME (no scheme, no password). clover-node refuses to start if DB_URL and this disagree.
+clover_production_db_host: "CHANGE-ME-atlas-host"
+# The Atlas URL is NOT here: upload it with CLOVER_DB_URL=... (a root-only file on the server). No local mongo, no Mongo restore.
+
+# --- database: restored from the production dump only through the runbook's own procedure -----------------------------------
+# db_restore_file stays as in staging; the production cutover uses the sealed dump from the transfer volume (runbook Phase 7).

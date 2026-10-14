@@ -136,6 +136,14 @@ uptime. Data is kept 15 days. The host network card is not shown (node_exporter 
 Not included yet: RabbitMQ and PostgreSQL metrics. Memory cost is about 400 to 600 MB; on a small server turn it off.
 Docker 29 needs cAdvisor v0.55 or newer, or no container names appear.
 
+## Production (placeholder only)
+`ansible/inventories/production/` holds the **settings that must differ in production**: Grafana on the loopback only
+(`monitoring_grafana_public: false`), no public Clover port, `clover_deploy_env: production`, the Atlas host name, and no
+Mongo restore (Atlas keeps its own data). It loads the staging variables first and overrides them. It is a **placeholder, not an
+approved path**: the runbook's production design pulls signed images and uses a dedicated database volume, and this recipe builds
+images on the server. The playbook refuses to run on that inventory while `clover_production_db_host` still says `CHANGE-ME`.
+Claude Code never runs anything against production; a human does it after the engineering lead approves.
+
 ## If something fails
 Read the last error in the output. Fix it, then run the same command again.
 
