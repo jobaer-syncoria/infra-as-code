@@ -1,0 +1,66 @@
+---
+- name: The admin site answers through nginx
+  ansible.builtin.uri: {url: "http://127.0.0.1/", status_code: 200}
+- name: The Clover Cloud page answers
+  ansible.builtin.uri: {url: "http://127.0.0.1:{{ clover_ui_port }}/", status_code: 200}
+- name: The omnisync API answers through nginx under /api/
+  ansible.builtin.uri: {url: "http://127.0.0.1/api/", status_code: [200, 301, 302, 400, 401, 403, 404]}
+- name: Container list
+  ansible.builtin.command:
+    cmd: "docker compose -p {{ compose_project }} ps --format '{{ '{{.Service}} {{.State}}' }}'"
+    chdir: "{{ stack_dir }}"
+  become: true
+  become_user: "{{ deploy_user }}"
+  register: smoke_ps
+  changed_when: false
+- name: Every service is running
+  ansible.builtin.assert:
+    that:
+      - smoke_ps.stdout_lines | length >= 9
+      - smoke_ps.stdout_lines | select('search', 'running') | list | length == smoke_ps.stdout_lines | length
+    fail_msg: "Not every container is running: {{ smoke_ps.stdout_lines }}"
+- name: Grafana answers (on this server's loopback)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ monitoring_grafana_port }}/api/health"
+    status_code: 200
+  register: smoke_grafana
+  until: smoke_grafana.status is defined and smoke_grafana.status == 200
+  retries: 20
+  delay: 6
+  when: monitoring_enabled
+
+- name: Prometheus scrapes all 3 targets (host, containers, itself)
+  ansible.builtin.shell: |
+    set -o pipefail
+    docker compose -p {{ compose_project }} exec -T prometheus \
+      wget -qO- 'http://localhost:9090/api/v1/query?query=count(up==1)' | grep -o '"value":\[[^]]*\]' | grep -q '"3"'
+  args:
+    chdir: "{{ stack_dir }}"
+    executable: /bin/bash
+  become: true
+  become_user: "{{ deploy_user }}"
+  register: smoke_targets
+  until: smoke_targets.rc == 0
+  retries: 12
+  delay: 15
+  changed_when: false
+  when: monitoring_enabled
+
+- name: Show the result
+  ansible.builtin.debug:
+    msg: "{{ lines + (grafana_lines if monitoring_enabled else []) }}"
+  vars:
+    lines:
+      - "omnisync admin:  http://{{ public_host_eff }}/"
+      - "Clover Cloud:    http://{{ public_host_eff }}:{{ clover_ui_port }}/"
+      - "Containers:      {{ smoke_ps.stdout_lines }}"
+    grafana_lines:
+      - >-
+        Grafana:
+        {{ ('http://' ~ public_host_eff ~ ':' ~ monitoring_grafana_port ~ ' (public)')
+        if monitoring_grafana_public else 'loopback only, use the SSH tunnel below' }}
+      - >-
+        Grafana tunnel (only if not public):
+        ssh -L {{ monitoring_grafana_port }}:127.0.0.1:{{ monitoring_grafana_port }} {{ deploy_user }}@{{ public_host_eff }}
+      - >-
+        Grafana login: user admin; password: grep GF_SECURITY_ADMIN_PASSWORD {{ stack_dir }}/monitoring.env

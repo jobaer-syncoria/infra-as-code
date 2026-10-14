@@ -1,0 +1,7 @@
+# Managed by Ansible: ban an address for {{ fail2ban_bantime }} after {{ fail2ban_maxretry }} failed SSH attempts within {{ fail2ban_findtime }}
+[sshd]
+enabled  = true
+backend  = systemd
+maxretry = {{ fail2ban_maxretry }}
+findtime = {{ fail2ban_findtime }}
+bantime  = {{ fail2ban_bantime }}

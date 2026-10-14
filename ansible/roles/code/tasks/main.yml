@@ -1,0 +1,60 @@
+---
+- name: The apps folder
+  ansible.builtin.file:
+    path: "{{ apps_dir }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0755"
+
+- name: The bundle folder is readable by the deploy user
+  ansible.builtin.file:
+    path: "{{ code_bundle_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+    recurse: true
+
+- name: Is each bundle on the server
+  ansible.builtin.stat:
+    path: "{{ code_bundle_dir }}/{{ item.bundle }}"
+  loop: "{{ code_repos }}"
+  loop_control: {label: "{{ item.bundle }}"}
+  register: code_bundles
+
+- name: Stop if a bundle is missing
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: >-
+      {{ code_bundle_dir }}/{{ item.item.bundle }} is missing. Run scripts/make-bundles.sh on your PC
+      and copy the files (docs/runbooks/rebuild-staging.md).
+  loop: "{{ code_bundles.results }}"
+  loop_control: {label: "{{ item.item.bundle }}"}
+
+- name: Clone each repo from its bundle (first run only)  # noqa: command-instead-of-module
+  ansible.builtin.command:
+    cmd: "git clone --quiet --branch {{ item.branch }} {{ code_bundle_dir }}/{{ item.bundle }} {{ apps_dir }}/{{ item.name }}"
+    creates: "{{ apps_dir }}/{{ item.name }}/.git"
+  become: true
+  become_user: "{{ deploy_user }}"
+  loop: "{{ code_repos }}"
+  loop_control: {label: "{{ item.name }}"}
+
+- name: Move each repo to the commit in its bundle (a newer bundle updates the repo; same bundle changes nothing)
+  ansible.builtin.shell: |
+    set -e
+    cd "{{ apps_dir }}/{{ item.name }}"
+    git fetch --quiet "{{ code_bundle_dir }}/{{ item.bundle }}" "+refs/heads/{{ item.branch }}:refs/remotes/bundle/{{ item.branch }}"
+    new=$(git rev-parse "refs/remotes/bundle/{{ item.branch }}")
+    if [ "$new" != "$(git rev-parse HEAD)" ]; then
+      git checkout --quiet --force -B "{{ item.branch }}" "$new"
+      echo "moved to $new"
+    fi
+  become: true
+  become_user: "{{ deploy_user }}"
+  loop: "{{ code_repos }}"
+  loop_control: {label: "{{ item.name }}"}
+  register: code_moved
+  changed_when: "'moved to' in code_moved.stdout"
+  when: not ansible_check_mode

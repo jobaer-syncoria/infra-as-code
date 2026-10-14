@@ -1,0 +1,5 @@
+# Release approvers own what can change a droplet (ADR-08 3.14). Replace the team once the real org exists (HI-08-03).
+releases/**                     @syncoria/release-approvers
+.github/workflows/**            @syncoria/release-approvers
+ansible/roles/pull/**           @syncoria/release-approvers
+scripts/odoosync-deploy         @syncoria/release-approvers

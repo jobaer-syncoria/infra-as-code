@@ -1,0 +1,57 @@
+---
+- name: Is there a database dump to restore
+  ansible.builtin.stat:
+    path: "{{ db_restore_file }}"
+  register: stack_dump
+
+- name: Was a dump already restored on this server
+  ansible.builtin.stat:
+    path: "{{ stack_dir }}/.db-restored"
+  register: stack_restored
+
+- name: Restore the database dump before the application starts
+  when: stack_dump.stat.exists and not stack_restored.stat.exists and not ansible_check_mode
+  block:
+    - name: Start only PostgreSQL
+      ansible.builtin.command:
+        cmd: "docker compose -p {{ compose_project }} -f docker-compose.yml up -d postgres"
+        chdir: "{{ stack_dir }}"
+      changed_when: true
+    - name: Wait until PostgreSQL accepts connections
+      ansible.builtin.command:
+        cmd: "docker compose -p {{ compose_project }} exec -T postgres pg_isready -U omnisync -d omnisync"
+        chdir: "{{ stack_dir }}"
+      register: stack_pg_ready
+      until: stack_pg_ready.rc == 0
+      retries: 30
+      delay: 4
+      changed_when: false
+    - name: Restore the dump (custom format with pg_restore, plain SQL with psql)
+      ansible.builtin.shell: |
+        set -eo pipefail
+        if [ "$(head -c5 '{{ db_restore_file }}')" = "PGDMP" ]; then
+          docker compose -p {{ compose_project }} exec -T postgres pg_restore -U omnisync -d omnisync \
+            --no-owner --no-acl --clean --if-exists {{ '--exit-on-error' if db_restore_exit_on_error else '' }} < '{{ db_restore_file }}'
+        else
+          docker compose -p {{ compose_project }} exec -T postgres psql -U omnisync -d omnisync -v ON_ERROR_STOP=1 -q < '{{ db_restore_file }}'
+        fi
+      args:
+        chdir: "{{ stack_dir }}"
+        executable: /bin/bash
+      changed_when: true
+    - name: Count what was restored (numbers only)
+      ansible.builtin.command:
+        cmd: >-
+          docker compose -p {{ compose_project }} exec -T postgres psql -U omnisync -d omnisync -Atc
+          "select count(*) from information_schema.tables where table_schema='public'"
+        chdir: "{{ stack_dir }}"
+      register: stack_restore_tables
+      changed_when: false
+    - name: Remember that it was restored (a rerun does not restore again; delete this file to restore again)
+      ansible.builtin.copy:
+        dest: "{{ stack_dir }}/.db-restored"
+        content: "restored from {{ db_restore_file }}\n"
+        mode: "0600"
+    - name: Report
+      ansible.builtin.debug:
+        msg: "Database restored: {{ stack_restore_tables.stdout }} tables in the public schema."

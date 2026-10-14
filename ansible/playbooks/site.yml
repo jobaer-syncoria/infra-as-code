@@ -1,0 +1,33 @@
+---
+# Rebuild staging from scratch. Run on the server itself as root after a DigitalOcean rebuild (see
+# docs/runbooks/rebuild-staging.md). Safe to run again: every step checks before it changes anything.
+- name: Server (the inventory decides which, staging or production)
+  hosts: all
+  become: true
+  vars_prompt:
+    - name: omnisync_admin_password
+      prompt: "Password for the omnisync admin user (empty = do not create one)"
+      private: true
+    - name: clover_admin_password
+      prompt: "Password for the Clover Cloud admin user (empty = do not create one)"
+      private: true
+  pre_tasks:
+    - name: Refuse to run a production inventory with placeholder settings
+      ansible.builtin.assert:
+        that:
+          - "'CHANGE-ME' not in (clover_production_db_host | string)"
+          - "clover_deploy_env != 'production' or (clover_production_db_host | string | length) > 0"
+        fail_msg: >-
+          clover_production_db_host is still a placeholder (or empty while clover_deploy_env is production). Set the real production
+          Atlas host name in the inventory, after the engineering lead has approved the run.
+  roles:
+    - base
+    - deploy_user
+    - ssh_hardening
+    - firewall
+    - fail2ban
+    - docker
+    - code
+    - stack
+    - first_data
+    - smoke

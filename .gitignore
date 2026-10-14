@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+!*.auto.tfvars.example
+.env
+ansible/collections/
+bundles/
+restore/
+*.dump
+*.sql

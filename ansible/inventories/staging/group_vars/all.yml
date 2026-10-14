@@ -1,0 +1,85 @@
+---
+# Non-secret settings for the staging server. No password, key or token is ever written here.
+# Secrets are generated on the server on the first run (roles/stack) and stay there (root/user-owned, mode 0600).
+
+# --- who and where ---------------------------------------------------------------------------------------------
+deploy_user: syncoria-dev
+apps_dir: "/home/{{ deploy_user }}/apps"
+stack_dir: "{{ apps_dir }}/stack"
+compose_project: omnisync-stg
+# The address people use to reach the sites. Empty = the droplet's public IPv4 address.
+public_host: ""
+public_host_eff: "{{ public_host if public_host else ansible_facts['default_ipv4']['address'] }}"
+
+# --- base ------------------------------------------------------------------------------------------------------
+base_packages: [ca-certificates, curl, git, gnupg, jq, ufw, fail2ban, unattended-upgrades, python3-venv, python3-debian, python3-systemd, acl, rsync, htop]
+swap_size: 2G
+
+# --- docker (VERSIONS.md rows 3, 4; staging runs 29.9.0 / compose 5.6.0 today) ------------------------------------
+docker_version_pin: "5:29.*"
+docker_daemon_config:
+  log-driver: json-file
+  log-opts: {max-size: 50m, max-file: "5"}
+  live-restore: true
+
+# --- ssh and firewall --------------------------------------------------------------------------------------------
+ssh_permit_root_login: "no"          # the first run happens as root; from then on log in as the deploy user
+ufw_allow_tcp: [22, 80, 443]   # 8081 and the Grafana port are added below when they are public
+expose_clover_ui: true               # also opens 8081 in ufw. NOTE: Docker-published ports bypass ufw; the DigitalOcean
+                                     # Cloud Firewall (terraform) is the real control. Staging only.
+clover_ui_port: 8081
+fail2ban_maxretry: 4
+fail2ban_findtime: 10m
+fail2ban_bantime: 1h
+
+# --- code: delivered as git bundles (no GitHub access needed on the server) --------------------------------------
+# make-bundles.sh on your PC creates the files; copy them to code_bundle_dir on the server (see docs/runbooks/rebuild-staging.md)
+code_bundle_dir: /opt/odoosync-bundles
+code_repos:
+  - {name: omnisync-py312, bundle: omnisync.bundle, branch: ci/omnisync-image-contract}
+  - {name: syncoria-connector-admin, bundle: admin.bundle, branch: ci/admin-release}
+  - {name: odoo-clover-cloud, bundle: clover.bundle, branch: fix/ns-outbound-and-broken}
+
+# --- the stack (matches the running staging; matrix pins arrive with PI.4) -----------------------------------------
+img_postgres: postgres:17
+img_rabbit: rabbitmq:3
+img_nginx: nginx:1.27-alpine
+img_mongo: mongo:6
+img_socat: alpine/socat
+omnisync_admin_user: stgadmin
+omnisync_admin_email: admin@staging.test
+
+# --- database restore (optional) -----------------------------------------------------------------------------------
+# If this file exists on the server and the database has not been restored yet, it is restored into the omnisync
+# PostgreSQL before the web container starts (which then runs `migrate` on top). The PC script uploads it when you set
+# DB_DUMP=/path/to/file. Works for pg_dump custom format (-Fc) and plain SQL. Go-live: point DB_DUMP at the production dump.
+db_restore_file: /opt/odoosync-restore/omnisync.dump
+db_restore_exit_on_error: true
+
+# --- Clover database: local Mongo container (staging default) or a cloud Mongo such as Atlas (ADR-10) ------------------
+# If the file below exists on the server, clover-node uses the URL inside it and NO local mongo container is started.
+# The URL holds a password, so it is never in this repo: the PC script uploads it when you set CLOVER_DB_URL=...
+clover_db_url_file: /opt/odoosync-secrets/clover_db_url
+# CLOVER_DEPLOY_ENV: production | staging | rehearsal | test. clover-node refuses to start when the database host equals
+# clover_production_db_host while this is not production (and the reverse). Production: set production + the Atlas host.
+clover_deploy_env: staging
+# The production Atlas HOST NAME only (not a secret, no scheme, no password). Set it in every environment to arm the guard.
+clover_production_db_host: ""
+
+# --- Clover Mongo restore (optional, local mongo container only) ------------------------------------------------------------
+# If this file exists and the local mongo has not been restored yet, it is restored (mongorestore --archive --gzip --drop)
+# before clover-node starts. The PC script uploads it when you set MONGO_DUMP=/path/to/archive. Not used with a cloud Mongo.
+mongo_restore_file: /opt/odoosync-restore/clover.archive
+
+# --- monitoring: Grafana + Prometheus + node_exporter + cAdvisor (host and containers) ---------------------------------------
+# Grafana listens on 127.0.0.1 only. Open it through an SSH tunnel:  ssh -L 3001:127.0.0.1:3001 syncoria-dev@<server>
+# then http://localhost:3001  (user admin; the generated password is in ~/apps/stack/monitoring.env).
+monitoring_enabled: true
+monitoring_grafana_port: 3001
+# false = loopback only (SSH tunnel). true = published on http://<server-ip>:3001, plain HTTP, staging only. Docker-published
+# ports bypass ufw; the DigitalOcean Cloud Firewall is the real control.
+monitoring_grafana_public: true
+img_prometheus: prom/prometheus:v3.1.0
+img_node_exporter: prom/node-exporter:v1.9.0
+img_cadvisor: gcr.io/cadvisor/cadvisor:v0.55.1  # v0.52 cannot talk to Docker 29 (sees no container names)
+img_grafana: grafana/grafana:11.5.1

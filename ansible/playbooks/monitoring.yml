@@ -1,0 +1,56 @@
+---
+# Add the monitoring stack (Prometheus, node_exporter, cAdvisor, Grafana) to an ALREADY BUILT staging server.
+# Needs no root: it only writes under the deploy user's stack folder and starts the four new containers (the other containers
+# are not touched). Run on the server as the deploy user:
+#   /opt/ansible-venv/bin/ansible-playbook playbooks/monitoring.yml -e ansible_become=false
+- name: Monitoring on an existing staging server
+  hosts: all
+  become: false
+  vars:
+    monitoring_enabled: true
+  tasks:
+    - name: Facts and env files (existing secrets are kept)
+      ansible.builtin.include_role:
+        name: stack
+        tasks_from: env.yml
+
+    - name: Monitoring config and the Grafana password
+      ansible.builtin.include_role:
+        name: stack
+        tasks_from: monitoring.yml
+
+    - name: Compose file with the monitoring services
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/stack/templates/docker-compose.yml.j2"
+        dest: "{{ stack_dir }}/docker-compose.yml"
+        mode: "0644"
+
+    - name: Start only the four monitoring containers
+      ansible.builtin.command:
+        cmd: "docker compose -p {{ compose_project }} -f docker-compose.yml up -d prometheus node-exporter cadvisor grafana"
+        chdir: "{{ stack_dir }}"
+      register: monitoring_up
+      changed_when: "'Started' in monitoring_up.stderr or 'Created' in monitoring_up.stderr"
+
+    - name: Grafana answers on this server's loopback
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ monitoring_grafana_port }}/api/health"
+        status_code: 200
+      register: monitoring_health
+      until: monitoring_health.status is defined and monitoring_health.status == 200
+      retries: 20
+      delay: 6
+
+    - name: Prometheus scrapes all 3 targets
+      ansible.builtin.shell: |
+        set -o pipefail
+        docker compose -p {{ compose_project }} exec -T prometheus \
+          wget -qO- 'http://localhost:9090/api/v1/query?query=count(up==1)' | grep -o '"value":\[[^]]*\]' | grep -q '"3"'
+      args:
+        chdir: "{{ stack_dir }}"
+        executable: /bin/bash
+      register: monitoring_targets
+      until: monitoring_targets.rc == 0
+      retries: 12
+      delay: 15
+      changed_when: false

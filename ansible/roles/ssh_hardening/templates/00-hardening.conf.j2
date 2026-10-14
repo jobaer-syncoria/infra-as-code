@@ -1,0 +1,9 @@
+# Managed by Ansible (role ssh_hardening). Sorts before 50-cloud-init.conf: sshd uses the FIRST value it reads.
+# Undo: delete this file and run: sudo systemctl reload ssh
+PermitRootLogin {{ ssh_permit_root_login }}
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+PermitEmptyPasswords no
+MaxAuthTries 3
+LoginGraceTime 30

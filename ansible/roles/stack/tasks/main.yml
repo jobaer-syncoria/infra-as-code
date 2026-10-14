@@ -1,0 +1,51 @@
+---
+- name: The stack folder
+  ansible.builtin.file:
+    path: "{{ stack_dir }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0750"
+
+- name: Secrets and env files
+  ansible.builtin.include_tasks: env.yml
+
+- name: Monitoring config
+  ansible.builtin.include_tasks: monitoring.yml
+  when: monitoring_enabled
+
+- name: Compose file and nginx config (re-rendered every run)
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ stack_dir }}/{{ item }}"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0644"
+  loop: [docker-compose.yml, nginx.conf]
+  register: stack_files
+
+- name: Restore a database dump first, if one was provided
+  ansible.builtin.include_tasks: restore.yml
+
+- name: Restore a Clover Mongo archive first, if one was provided
+  ansible.builtin.include_tasks: restore_mongo.yml
+
+- name: Build and start the stack (several minutes the first time)
+  ansible.builtin.command:
+    cmd: "docker compose -p {{ compose_project }} -f docker-compose.yml up -d --build --remove-orphans"
+    chdir: "{{ stack_dir }}"
+  become: true
+  become_user: "{{ deploy_user }}"
+  register: stack_compose_up
+  changed_when: "'Started' in stack_compose_up.stderr or 'Recreated' in stack_compose_up.stderr or 'Created' in stack_compose_up.stderr"
+  async: 3000
+  poll: 15
+
+- name: Wait until the API answers
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8000/
+    status_code: [200, 301, 302, 400, 401, 403, 404]
+  register: stack_api_up
+  until: stack_api_up.status is defined and stack_api_up.status in [200, 301, 302, 400, 401, 403, 404]
+  retries: 40
+  delay: 6

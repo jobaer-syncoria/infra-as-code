@@ -1,0 +1,59 @@
+---
+- name: The deploy user
+  ansible.builtin.user:
+    name: "{{ deploy_user }}"
+    shell: /bin/bash
+    groups: sudo
+    append: true
+    create_home: true
+
+- name: Passwordless sudo for the deploy user (staging playground)
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/90-{{ deploy_user }}"
+    owner: root
+    group: root
+    mode: "0440"
+    content: "{{ deploy_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    validate: "visudo -cf %s"
+
+- name: The .ssh folder
+  ansible.builtin.file:
+    path: "/home/{{ deploy_user }}/.ssh"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0700"
+
+- name: Does the deploy user already have keys
+  ansible.builtin.stat:
+    path: "/home/{{ deploy_user }}/.ssh/authorized_keys"
+  register: deploy_user_keys
+
+- name: Root's keys (the key you gave DigitalOcean at rebuild)
+  ansible.builtin.stat:
+    path: /root/.ssh/authorized_keys
+  register: deploy_user_root_keys
+
+- name: Give the deploy user the same keys, once. No key text is ever in this repo.
+  ansible.builtin.copy:
+    src: /root/.ssh/authorized_keys
+    remote_src: true
+    dest: "/home/{{ deploy_user }}/.ssh/authorized_keys"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0600"
+  when: not deploy_user_keys.stat.exists and deploy_user_root_keys.stat.exists
+
+- name: Is the deploy user's key file now there and not empty
+  ansible.builtin.stat:
+    path: "/home/{{ deploy_user }}/.ssh/authorized_keys"
+  register: deploy_user_keys_after
+
+- name: Refuse to go on without a key (SSH hardening next would lock you out)
+  ansible.builtin.assert:
+    that:
+      - deploy_user_keys_after.stat.exists
+      - deploy_user_keys_after.stat.size > 0
+    fail_msg: >-
+      {{ deploy_user }} has no SSH key. Add your public key to /home/{{ deploy_user }}/.ssh/authorized_keys,
+      or rebuild the droplet with your key selected in the DigitalOcean console, then run again.

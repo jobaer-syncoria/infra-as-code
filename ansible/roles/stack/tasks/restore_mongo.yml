@@ -1,0 +1,63 @@
+---
+- name: Is there a Mongo archive to restore
+  ansible.builtin.stat:
+    path: "{{ mongo_restore_file }}"
+  register: stack_mongo_archive
+
+- name: Was a Mongo archive already restored on this server
+  ansible.builtin.stat:
+    path: "{{ stack_dir }}/.mongo-restored"
+  register: stack_mongo_restored
+
+- name: Restore the Clover Mongo archive before clover-node starts
+  when: stack_mongo_archive.stat.exists and not stack_mongo_restored.stat.exists and not stack_external_mongo and not ansible_check_mode
+  block:
+    - name: Start only Mongo
+      ansible.builtin.command:
+        cmd: "docker compose -p {{ compose_project }} -f docker-compose.yml up -d mongo"
+        chdir: "{{ stack_dir }}"
+      changed_when: true
+    - name: Wait until Mongo accepts the root login (its first start creates the user, then restarts)
+      ansible.builtin.shell: |
+        set -o pipefail
+        docker compose -p {{ compose_project }} exec -T mongo sh -c \
+          'U=mongodb://$MONGO_INITDB_ROOT_USERNAME:$MONGO_INITDB_ROOT_PASSWORD@localhost:27017;
+          mongosh --quiet "$U/admin?authSource=admin" --eval "db.runCommand({ping:1}).ok"' | grep -qx 1
+      args:
+        chdir: "{{ stack_dir }}"
+        executable: /bin/bash
+      register: stack_mongo_ready
+      until: stack_mongo_ready.rc == 0
+      retries: 40
+      delay: 5
+      changed_when: false
+    - name: Restore the archive (replaces the clover database)
+      ansible.builtin.shell: |
+        set -eo pipefail
+        docker compose -p {{ compose_project }} exec -T mongo sh -c \
+          'U=mongodb://$MONGO_INITDB_ROOT_USERNAME:$MONGO_INITDB_ROOT_PASSWORD@localhost:27017;
+          mongorestore --quiet --uri="$U/?authSource=admin" --archive --gzip --drop --nsInclude="clover.*"' \
+          < '{{ mongo_restore_file }}'
+      args:
+        chdir: "{{ stack_dir }}"
+        executable: /bin/bash
+      changed_when: true
+    - name: Count what was restored (collection names and document counts only)
+      ansible.builtin.shell: |
+        docker compose -p {{ compose_project }} exec -T mongo sh -c \
+          'U=mongodb://$MONGO_INITDB_ROOT_USERNAME:$MONGO_INITDB_ROOT_PASSWORD@localhost:27017;
+          mongosh --quiet "$U/clover?authSource=admin" \
+          --eval "db.getCollectionNames().sort().forEach(c=>print(c,db[c].countDocuments()))"'
+      args:
+        chdir: "{{ stack_dir }}"
+        executable: /bin/bash
+      register: stack_mongo_counts
+      changed_when: false
+    - name: Remember that it was restored (delete this file to restore again; that replaces the database)
+      ansible.builtin.copy:
+        dest: "{{ stack_dir }}/.mongo-restored"
+        content: "restored from {{ mongo_restore_file }}\n"
+        mode: "0600"
+    - name: Report
+      ansible.builtin.debug:
+        msg: "Mongo restored: {{ stack_mongo_counts.stdout_lines }}"

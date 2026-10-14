@@ -1,0 +1,49 @@
+---
+- name: Keyrings folder
+  ansible.builtin.file: {path: /etc/apt/keyrings, state: directory, owner: root, group: root, mode: "0755"}
+
+- name: Docker's signing key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Docker's apt repository
+  ansible.builtin.deb822_repository:
+    name: docker
+    types: deb
+    uris: https://download.docker.com/linux/ubuntu
+    suites: "{{ ansible_facts['distribution_release'] }}"
+    components: stable
+    architectures: amd64
+    signed_by: /etc/apt/keyrings/docker.asc
+    state: present
+
+- name: Docker Engine and the compose plugin (major version pinned)
+  ansible.builtin.apt:
+    name:
+      - "docker-ce={{ docker_version_pin }}"
+      - "docker-ce-cli={{ docker_version_pin }}"
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+  notify: Restart docker
+
+- name: Daemon settings (log rotation, live restore)
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ docker_daemon_config | to_nice_json }}\n"
+  notify: Restart docker
+
+- name: Docker running and on at boot
+  ansible.builtin.service: {name: docker, state: started, enabled: true}
+
+- name: The deploy user may use docker
+  ansible.builtin.user: {name: "{{ deploy_user }}", groups: docker, append: true}

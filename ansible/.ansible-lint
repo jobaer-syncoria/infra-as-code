@@ -1,0 +1,4 @@
+# Lint only our own code. In CI (and in rebuild-staging.sh) the Galaxy collections are installed under ansible/collections.
+exclude_paths:
+  - collections/
+  - .github/

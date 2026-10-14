@@ -1,0 +1,16 @@
+---
+- name: UFW default deny incoming
+  community.general.ufw: {default: deny, direction: incoming}
+- name: UFW default allow outgoing
+  community.general.ufw: {default: allow, direction: outgoing}
+- name: Allow the public ports
+  community.general.ufw:
+    rule: allow
+    port: "{{ item | string }}"
+    proto: tcp
+  loop: >-
+    {{ ufw_allow_tcp
+    + ([clover_ui_port] if expose_clover_ui else [])
+    + ([monitoring_grafana_port] if (monitoring_enabled and monitoring_grafana_public) else []) }}
+- name: UFW on
+  community.general.ufw: {state: enabled}
