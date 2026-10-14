@@ -1,0 +1,165 @@
+---
+# Installs the root deploy tools (odoosync-deploy, odoosync-secrets), their trust files and a root-owned clone of the infra repo.
+# It installs NOTHING until an approver public key is provided: without a key no release tag could ever verify, and the
+# run must not fail the server rebuild. Provide keys with deploy_approver_keys (list) or deploy_approver_keys_file (a file ON THE
+# SERVER with one SSH public key per line). Public keys only; a private key is never needed here.
+
+- name: Read the approver keys file, if one was given
+  ansible.builtin.slurp:
+    src: "{{ deploy_approver_keys_file }}"
+  register: deploy_tools_keys_raw
+  when: deploy_approver_keys_file | length > 0
+
+- name: Collect the approver public keys
+  ansible.builtin.set_fact:
+    deploy_tools_keys: >-
+      {{ (deploy_approver_keys
+      + ((deploy_tools_keys_raw.content | b64decode).splitlines() if deploy_tools_keys_raw.content is defined else []))
+      | map('trim') | reject('equalto', '') | reject('match', '^#') | unique | list }}
+
+- name: Say plainly when the deploy tools are skipped
+  ansible.builtin.debug:
+    msg: >-
+      SKIPPED: no approver public key was provided, so the deploy tools are not installed. Set deploy_approver_keys or
+      deploy_approver_keys_file (see docs/runbooks/staging-deploy.md), then run this playbook again.
+  when: deploy_tools_keys | length == 0
+
+- name: Install the deploy tools
+  when: deploy_tools_keys | length > 0
+  block:
+    - name: Packages the tools use
+      ansible.builtin.apt:
+        name: [jq, git, util-linux, python3]
+        state: present
+
+    - name: Install cosign, pinned by version and sha256 (never an unpinned download)
+      ansible.builtin.get_url:
+        url: "https://github.com/sigstore/cosign/releases/download/{{ cosign_version }}/cosign-linux-amd64"
+        dest: /usr/local/bin/cosign
+        checksum: "sha256:{{ cosign_sha256 }}"
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Root-owned folders
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - "{{ deploy_tools_dir }}"
+        - "{{ deploy_tools_dir }}/lib"
+        - /etc/odoosync
+        - /etc/odoosync/trust
+        - /srv/odoosync
+        - /srv/odoosync/state
+        - /srv/odoosync/releases
+
+    - name: The tools and their library, installed from this repo (never from a checkout the tools could be run out of)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../scripts/{{ item.src }}"
+        dest: "{{ deploy_tools_dir }}/{{ item.src }}"
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - {src: odoosync-deploy, mode: "0755"}
+        - {src: odoosync-secrets, mode: "0755"}
+        - {src: lib/common.sh, mode: "0644"}
+
+    - name: Put the tools on the root PATH
+      ansible.builtin.file:
+        src: "{{ deploy_tools_dir }}/{{ item }}"
+        dest: "/usr/local/sbin/{{ item }}"
+        state: link
+      loop: [odoosync-deploy, odoosync-secrets]
+
+    - name: Environment file read by the tools (root-owned, not writable by others)
+      ansible.builtin.template:
+        src: env.j2
+        dest: /etc/odoosync/env
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Flags file (created empty, never overwritten)
+      ansible.builtin.copy:
+        content: ""
+        dest: /etc/odoosync/flags.env
+        owner: root
+        group: root
+        mode: "0644"
+        force: false
+
+    - name: Release approvers (the SSH public keys whose signed tags are accepted)
+      ansible.builtin.copy:
+        content: |
+          {% for k in deploy_tools_keys %}
+          approver{{ loop.index }} namespaces="git" {{ k.split(' ')[0] }} {{ k.split(' ')[1] }}
+          {% endfor %}
+        dest: /etc/odoosync/trust/allowed_signers
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: The signed image policy (which images, signed by whom)
+      ansible.builtin.copy:
+        content: "{{ deploy_policy | to_nice_json }}\n"
+        dest: /etc/odoosync/trust/image-policy.json
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: The policy names every image it allows, with a real repository as the key (never an unrendered template)
+      ansible.builtin.assert:
+        that:
+          - deploy_policy.images | length > 0
+          - deploy_policy.images.keys() | select('search', '[{][{]') | list | length == 0
+          - deploy_policy.services.values() | select('search', '[{][{]') | list | length == 0
+        quiet: true
+
+    - name: How git reaches the infra repo (a read-only deploy key file, when the repo is private)
+      ansible.builtin.set_fact:
+        deploy_tools_git_ssh: >-
+          {{ ('ssh -i ' ~ infra_deploy_key_file ~ ' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new')
+          if infra_deploy_key_file | length > 0 else 'ssh' }}
+
+    - name: Is there already a clone of the infra repo
+      ansible.builtin.stat:
+        path: /srv/odoosync/infra.git/HEAD
+      register: deploy_tools_clone
+
+    - name: Clone the infra repo (bare, root-owned)  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: "git clone --bare --quiet {{ infra_repo_url }} /srv/odoosync/infra.git"
+      environment:
+        GIT_SSH_COMMAND: "{{ deploy_tools_git_ssh }}"
+        GIT_TERMINAL_PROMPT: "0"
+      when: not deploy_tools_clone.stat.exists
+      changed_when: true
+
+    - name: Fetch every branch and tag (a pull timer will do this every 2 minutes later)  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: "git -C /srv/odoosync/infra.git fetch --prune --quiet origin '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'"
+      environment:
+        GIT_SSH_COMMAND: "{{ deploy_tools_git_ssh }}"
+        GIT_TERMINAL_PROMPT: "0"
+      changed_when: false
+      when: deploy_tools_clone.stat.exists
+
+    - name: Smoke check, cosign runs
+      ansible.builtin.command: /usr/local/bin/cosign version
+      register: deploy_tools_cosign
+      changed_when: false
+
+    - name: Smoke check, the deploy tool refuses a malformed request (exit 3), which proves it is installed and guarding
+      ansible.builtin.command: /usr/local/sbin/odoosync-deploy request --env /tmp/not-the-env --service web --digest x --ref x --check-only
+      register: deploy_tools_refusal
+      changed_when: false
+      failed_when: deploy_tools_refusal.rc != 3 or 'deploy_refused bad_args' not in deploy_tools_refusal.stderr
+
+    - name: Smoke check, the secrets tool lists names only
+      ansible.builtin.command: /usr/local/sbin/odoosync-secrets check
+      changed_when: false

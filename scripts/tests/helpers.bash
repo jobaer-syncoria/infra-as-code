@@ -50,7 +50,7 @@ write_policy() {
     "ghcr.io/syncoria/odoosync-postgres": {"identity": "https://github.com/syncoria/odoosync-infra/.github/workflows/templates.yml@refs/heads/production", "issuer": "$ISSUER"}
   },
   "label_checked": ["ghcr.io/syncoria/omnisync"],
-  "serving_values_path": "/app/deploy/serving_values.json",
+  "serving_values_path": "/code/deploy/serving_values.json",
   "readiness_timeout": 2,
   "poll_seconds": 0,
   "stable_seconds": 0

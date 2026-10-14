@@ -27,6 +27,7 @@
     - firewall
     - fail2ban
     - docker
+    - deploy_tools
     - code
     - stack
     - first_data

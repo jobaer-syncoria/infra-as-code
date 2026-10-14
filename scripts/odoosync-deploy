@@ -125,7 +125,7 @@ cmd_request() {
   if [ "$skip_label_sv" -eq 0 ] && jq -e --arg r "$repo" '(.label_checked // []) | index($r)' "$policy" >/dev/null; then
     need docker
     local svpath
-    svpath="$(jq -r '.serving_values_path // "/app/deploy/serving_values.json"' "$policy")"
+    svpath="$(jq -r '.serving_values_path // "/code/deploy/serving_values.json"' "$policy")"
     docker run --rm --network none --entrypoint cat "${repo}@${digest}" "$svpath" 2>/dev/null \
       | cmp -s - "$rel/nginx/serving_values.json" || refuse serving_values "$repo"
   fi

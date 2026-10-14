@@ -8,6 +8,8 @@
 #                                     (you type the sudo password once, in your own terminal)
 # Optional: DB_DUMP=/path/to/omnisync.dump        restore that database dump (pg_dump -Fc or plain SQL)
 # Optional: MONGO_DUMP=/path/to/clover.archive    restore that Clover Mongo archive (mongodump --archive --gzip) into the local mongo container
+# Optional: APPROVER_KEYS=/path/to/file.pub    SSH PUBLIC keys (one per line) of the release approvers: installs the deploy tools (odoosync-deploy)
+#           and trusts tags signed by those keys. Without it the deploy tools are skipped.
 # Optional: CLOVER_DB_URL='mongodb+srv://...'      use that cloud Mongo (Atlas) instead of the local mongo container. The URL is
 #           sent over SSH into a 0600 file on the server; it is never printed or put in the repo.
 # Optional: ANSIBLE_ARGS='-e clover_deploy_env=production -e clover_production_db_host=<atlas-host>'   extra Ansible settings
@@ -53,6 +55,15 @@ if [ -n "${MONGO_DUMP:-}" ]; then
   echo "== 3b2/4 upload the Clover Mongo archive ($(du -h "$MONGO_DUMP" | cut -f1))"
   ssh "${SSH_OPTS[@]}" "$R" "mkdir -p '$RESTORE' && chmod 700 '$RESTORE'"
   ssh "${SSH_OPTS[@]}" "$R" "cat > '$RESTORE/clover.archive' && chmod 600 '$RESTORE/clover.archive'" < "$MONGO_DUMP"
+fi
+
+if [ -n "${APPROVER_KEYS:-}" ]; then
+  [ -f "$APPROVER_KEYS" ] || { echo "APPROVER_KEYS not found: $APPROVER_KEYS" >&2; exit 1; }
+  TRUSTDIR="$([ "$USER_" = root ] && echo /opt/odoosync-trust || echo "$BASE/odoosync-trust")"
+  echo "== 3d/4 upload the release approvers' public keys"
+  ssh "${SSH_OPTS[@]}" "$R" "mkdir -p '$TRUSTDIR' && chmod 755 '$TRUSTDIR'"
+  ssh "${SSH_OPTS[@]}" "$R" "cat > '$TRUSTDIR/approver_keys' && chmod 644 '$TRUSTDIR/approver_keys'" < "$APPROVER_KEYS"
+  EXTRA="$EXTRA -e deploy_approver_keys_file=$TRUSTDIR/approver_keys"
 fi
 
 if [ -n "${CLOVER_DB_URL:-}" ]; then
