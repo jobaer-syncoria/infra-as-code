@@ -89,7 +89,7 @@ jobs:
       - name: docker compose config -q (dummy env files)
         run: |
           [ -f compose/compose.yml ] || { echo "no compose yet"; exit 0; }
-          mkdir -p /tmp/stack-env && touch /tmp/stack-env/omnisync.env
+          mkdir -p /tmp/stack-env && touch /tmp/stack-env/omnisync.env /tmp/stack-env/clover.env /tmp/stack-env/clover-conn.env
           STACK_ENV_DIR=/tmp/stack-env docker compose -f compose/compose.yml config -q
       - name: nginx -t for every variant
         run: |

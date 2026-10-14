@@ -61,9 +61,13 @@ services:
     volumes: [mongodata:/data/db]
 {% endif %}
   clover-node:
+{% if stack_signed_clover | default(false) %}
+    image: ${IMAGE_CLOVER_NODE}
+{% else %}
     build:
       context: ../odoo-clover-cloud
     image: clover-node-stg:local
+{% endif %}
     restart: unless-stopped
     env_file: [clover.env, clover-conn.env]
     ports: ["{{ clover_ui_port }}:8081"]

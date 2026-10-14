@@ -102,13 +102,19 @@ infra_deploy_key_file: ""
 deploy_image_repo: ghcr.io/syncoria/omnisync-staging
 deploy_signer_identity: https://github.com/syncoria/omnisync/.github/workflows/release-staging.yml@refs/heads/staging-release
 deploy_signer_issuer: https://token.actions.githubusercontent.com
+# clover-node: a separate image, signed by the Clover repo's staging release workflow
+deploy_clover_image_repo: ghcr.io/syncoria/clover-node-staging
+deploy_clover_signer_identity: https://github.com/syncoria/odoo-clover-cloud/.github/workflows/release-staging.yml@refs/heads/staging-release
 deploy_policy:
   services:
     web: "{{ deploy_image_repo }}"
     worker: "{{ deploy_image_repo }}"
+    clover-node: "{{ deploy_clover_image_repo }}"
   upstream: []
   # a dictionary KEY is not templated by Ansible, so the whole dictionary is built in one expression
-  images: "{{ {deploy_image_repo: {'identity': deploy_signer_identity, 'issuer': deploy_signer_issuer}} }}"
+  images: >-
+    {{ {deploy_image_repo: {'identity': deploy_signer_identity, 'issuer': deploy_signer_issuer},
+        deploy_clover_image_repo: {'identity': deploy_clover_signer_identity, 'issuer': deploy_signer_issuer}} }}
   label_checked: ["{{ deploy_image_repo }}"]
   serving_values_path: /code/deploy/serving_values.json
   # the superuser of the staging PostgreSQL container (POSTGRES_USER); the production default is postgres
@@ -121,7 +127,7 @@ deploy_policy:
   # the pull agent (odoosync-pull): staging follows the registry's moving tag; services in this order
   pull:
     tag: staging
-    services: [worker, web]
+    services: [worker, web, clover-node]
   # odoosync-verify: ports that may listen on all interfaces (Docker publishes bypass ufw; staging shows Grafana 3001 and Clover 8081
   # on purpose) and the URLs `smoke` must see answering
   verify:
