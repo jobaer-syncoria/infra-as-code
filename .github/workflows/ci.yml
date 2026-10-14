@@ -22,7 +22,7 @@ jobs:
       - run: pip install pyyaml==6.0.2
       - name: Policy check (prevent_destroy, ignore_changes, no managed DB, no attachments)
         run: python3 ci/check_terraform_policy.py
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with: { terraform_version: "~> 1.16" }
       - name: fmt and validate
         run: |
