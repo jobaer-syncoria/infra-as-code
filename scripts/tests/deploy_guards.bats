@@ -14,9 +14,10 @@ refused() { [ "$status" -eq 3 ] && [[ "$output" == *"deploy_refused $1"* ]]; }
   [[ "$output" == *request_ok* ]]
 }
 
-@test "without --check-only a request that passed the guards still applies nothing (exit 78)" {
+@test "without --check-only a request that passed the guards goes on to apply (production refuses a payment-path service)" {
   run "$SCRIPTS/odoosync-deploy" request --env /etc/odoosync/env --service web --digest "$D1" --ref release/ok
-  [ "$status" -eq 78 ]
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"deploy_refused apply_needs_bluegreen"* ]]
 }
 
 @test "every refusal is also written to the journal as deploy_refused" {

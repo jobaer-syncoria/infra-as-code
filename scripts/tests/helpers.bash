@@ -33,6 +33,8 @@ make_sandbox() {
   export STUB_LABELS='{"org.syncoria.python":"3.12.4","org.syncoria.django":"5.2.1"}'
   export STUB_SERVING_FILE="$WORK/nginx/serving_values.json"
   export STUB_PGVER=170011
+  export STUB_ROOT="$ROOT" STUB_DOCKER_LOG="$ROOT/docker.log"
+  : > "$STUB_DOCKER_LOG"
   export STUB_COSIGN_OK_IDENTITY="$IDENT_PROD"
   signed_tag release/ok "$KEYS/approver"
 }
@@ -48,9 +50,18 @@ write_policy() {
     "ghcr.io/syncoria/odoosync-postgres": {"identity": "https://github.com/syncoria/odoosync-infra/.github/workflows/templates.yml@refs/heads/production", "issuer": "$ISSUER"}
   },
   "label_checked": ["ghcr.io/syncoria/omnisync"],
-  "serving_values_path": "/app/deploy/serving_values.json"
+  "serving_values_path": "/app/deploy/serving_values.json",
+  "readiness_timeout": 2,
+  "poll_seconds": 0,
+  "stable_seconds": 0
 }
 JSON
+  chmod 644 "$ETC/trust/image-policy.json"
+}
+
+# policy_add '<jq filter>' : extend the signed policy in the sandbox (e.g. '.required_secrets = {"web":["DJANGO_SECRET_KEY"]}')
+policy_add() {
+  jq "$1" "$ETC/trust/image-policy.json" > "$ETC/trust/image-policy.json.new" && mv "$ETC/trust/image-policy.json.new" "$ETC/trust/image-policy.json"
   chmod 644 "$ETC/trust/image-policy.json"
 }
 
@@ -77,10 +88,28 @@ exit 1
 COSIGN_END
   cat > "$STUBS/docker" <<'DOCKER_END'
 #!/usr/bin/env bash
+# stand-in for docker: logs every call to $STUB_DOCKER_LOG; behaviour is steered by STUB_* variables
+printf '%s\n' "$*" >> "$STUB_DOCKER_LOG"
 case "$1" in
+  pull) [ -z "${STUB_PULL_FAIL:-}" ] || exit 1 ;;
   image) printf '%s\n' "$STUB_LABELS" ;;
   run) cat "$STUB_SERVING_FILE" ;;
-  compose) printf '%s\n' "$STUB_PGVER" ;;
+  inspect)
+    case "$*" in
+      *State.Running*) echo true ;;
+      *) seq="$STUB_ROOT/health.seq"
+         [ -f "$seq" ] || printf '%s' "${STUB_HEALTH_SEQ:-healthy}" > "$seq"
+         read -r first rest < "$seq"
+         if [ -n "$rest" ]; then printf '%s' "$rest" > "$seq"; else printf '%s' "$first" > "$seq"; fi
+         echo "$first" ;;
+    esac ;;
+  compose)
+    case "$*" in
+      *psql*) printf '%s\n' "$STUB_PGVER" ;;
+      *" ps "*) echo cid-test ;;
+      *" up "*) [ -z "${STUB_UP_FAIL:-}" ] || exit 1 ;;
+      *) ;;
+    esac ;;
   *) exit 1 ;;
 esac
 DOCKER_END
@@ -92,3 +121,9 @@ request() {  # request <service> <digest> <ref> [extra args]
   local s="$1" d="$2" r="$3"; shift 3
   run "$SCRIPTS/odoosync-deploy" request --env /etc/odoosync/env --service "$s" --digest "$d" --ref "$r" --check-only "$@"
 }
+
+apply() {  # apply <service> <digest> <ref> [extra args]   (the real thing: no --check-only)
+  local s="$1" d="$2" r="$3"; shift 3
+  run "$SCRIPTS/odoosync-deploy" request --env /etc/odoosync/env --service "$s" --digest "$d" --ref "$r" "$@"
+}
+D3="sha256:$(printf 'c%.0s' $(seq 64))"
