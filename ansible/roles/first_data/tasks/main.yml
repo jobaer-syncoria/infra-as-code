@@ -3,7 +3,7 @@
 # environment of the command (never on its command line, never in a file) and are not printed.
 - name: Create the omnisync admin user
   ansible.builtin.shell: |
-    docker compose -p {{ compose_project }} exec -T -e ADMIN_PW web python manage.py shell -c "
+    docker compose -p {{ compose_project }} exec -T -e ADMIN_PW web-a python manage.py shell -c "
     import os
     from django.contrib.auth import get_user_model
     U = get_user_model()
