@@ -129,6 +129,18 @@ deploy_policy:
   readiness_timeout: 240
   poll_seconds: 3
   stable_seconds: 10
+  # blue/green for the API: two colours, the edge's upstream include (the folder is mounted into edge), and each colour's name on the
+  # compose network (edge is on a bridge network on the playground, so it reaches a colour by name, not by loopback)
+  bluegreen:
+    web:
+      colours:
+        a: {service: web-a, port: 8000, upstream: "web-a:8000"}
+        b: {service: web-b, port: 8002, upstream: "web-b:8000"}
+      include: /srv/odoosync/state/upstream/upstream-web.conf
+      edge_service: edge
+      container_port: 8000
+      quiet_cap: 300
+      probe_timeout: 240
   # the pull agent (odoosync-pull): staging follows the registry's moving tag; services in this order
   pull:
     tag: staging

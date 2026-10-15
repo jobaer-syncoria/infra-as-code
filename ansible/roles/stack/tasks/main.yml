@@ -14,14 +14,26 @@
   ansible.builtin.include_tasks: monitoring.yml
   when: monitoring_enabled
 
-# Once the pull agent (odoosync-pull / odoosync-deploy) has put a SIGNED image on web or worker, it owns them. A rerun of this role must
-# not rebuild them or point them back at the local build (that silently replaced the signed image on 2026-10-14).
+# Once the pull agent (odoosync-pull / odoosync-deploy) has put a SIGNED image on a service, it owns that service. A rerun of this
+# role must not rebuild it or point it back at the local build (that silently replaced the signed image on 2026-10-14).
+# Output lines:  set:<service>  the deploy tool has recorded an image for it;   own:<service>  and a container of it exists.
+# web is a blue/green pair (web-a, web-b): IMAGE_WEB_A / IMAGE_WEB_B. A host from before the pair existed has IMAGE_WEB; its value
+# moves to IMAGE_WEB_A once, so the signed image keeps running as colour a.
 - name: Which services does the deploy tool already own
   ansible.builtin.shell: |
     set -o pipefail
     f=/srv/odoosync/state/images.env
     [ -f "$f" ] || exit 0
-    grep -oE '^IMAGE_(WEB|WORKER|CLOVER_NODE|ADMIN_WEB)=' "$f" | sed 's/^IMAGE_//; s/=$//; s/_/-/g' | tr 'A-Z' 'a-z'
+    if grep -q '^IMAGE_WEB=' "$f" && ! grep -qE '^IMAGE_WEB_[AB]=' "$f"; then
+      echo "IMAGE_WEB_A=$(sed -n 's/^IMAGE_WEB=//p' "$f" | head -n1)" >> "$f"
+    fi
+    for v in WEB_A WEB_B WORKER CLOVER_NODE ADMIN_WEB; do
+      grep -q "^IMAGE_${v}=" "$f" || continue
+      svc="$(printf '%s' "$v" | tr 'A-Z_' 'a-z-')"
+      echo "set:$svc"
+      cs="label=com.docker.compose.service=$svc"
+      [ -z "$(docker ps -aq --filter "label=com.docker.compose.project={{ compose_project }}" --filter "$cs")" ] || echo "own:$svc"
+    done
   args:
     executable: /bin/bash
   register: stack_owned
@@ -29,11 +41,31 @@
 
 - name: Remember what the deploy tool owns
   ansible.builtin.set_fact:
-    stack_signed_web: "{{ 'web' in stack_owned.stdout_lines }}"
-    stack_signed_worker: "{{ 'worker' in stack_owned.stdout_lines }}"
-    stack_signed_clover: "{{ 'clover-node' in stack_owned.stdout_lines }}"
-    stack_signed_admin: "{{ 'admin-web' in stack_owned.stdout_lines }}"
-    stack_any_signed: "{{ stack_owned.stdout_lines | length > 0 }}"
+    stack_signed_web: "{{ 'own:web-a' in stack_owned.stdout_lines or 'own:web-b' in stack_owned.stdout_lines }}"
+    stack_img_web_set: "{{ 'set:web-a' in stack_owned.stdout_lines or 'set:web-b' in stack_owned.stdout_lines }}"
+    stack_signed_worker: "{{ 'own:worker' in stack_owned.stdout_lines }}"
+    stack_signed_clover: "{{ 'own:clover-node' in stack_owned.stdout_lines }}"
+    stack_signed_admin: "{{ 'own:admin-web' in stack_owned.stdout_lines }}"
+    stack_any_signed: "{{ stack_owned.stdout_lines | select('match', '^set:') | list | length > 0 }}"
+
+# The edge's upstream include: one line naming the live colour. Created once (a first start serves colour a); odoosync-deploy rewrites
+# it on every switch. The folder is mounted into edge as a directory, so an atomic replace of the file is seen by nginx.
+- name: The upstream folder for the blue/green include
+  ansible.builtin.file:
+    path: /srv/odoosync/state/upstream
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: The initial upstream include (colour a), never overwritten
+  ansible.builtin.copy:
+    dest: /srv/odoosync/state/upstream/upstream-web.conf
+    content: "server web-a:8000;\n"
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
 
 - name: Compose file and nginx config (re-rendered every run)
   ansible.builtin.template:
@@ -67,7 +99,8 @@
   vars:
     stack_start_list: >-
       {{ stack_services.stdout_lines
-         | difference(['web'] if stack_signed_web else [])
+         | difference(['web-b'])
+         | difference(['web-a'] if stack_signed_web else [])
          | difference(['worker'] if stack_signed_worker else [])
          | difference(['clover-node'] if stack_signed_clover else [])
          | difference(['admin-web'] if stack_signed_admin else []) }}

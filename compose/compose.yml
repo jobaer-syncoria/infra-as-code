@@ -3,10 +3,13 @@
 #   - images come from IMAGE_* (odoosync-deploy writes /srv/odoosync/state/images.env with repo@digest);
 #     a service that was not deployed yet falls back to the image the Ansible stack built locally;
 #   - the env files are host-local secrets that never enter git: STACK_ENV_DIR (set in /etc/odoosync/env) points at them.
-# Only `web`, `worker`, `clover-node` and `admin-web` are managed here. The other services stay as the Ansible stack role defines them.
+# Only `web` (the blue/green pair web-a and web-b), `worker`, `clover-node` and `admin-web` are managed here. The other services stay as the Ansible stack defines them.
 services:
-  web:
-    image: ${IMAGE_WEB:-omnisync-stg:local}
+  # web is a blue/green pair: odoosync-deploy starts the idle colour with the new image, waits until it is ready, relinks the edge's
+  # upstream include and reloads nginx, lets the old colour drain, then stops it with this stop_grace_period. The ports are loopback
+  # only; the image of each colour comes from IMAGE_WEB_A / IMAGE_WEB_B.
+  web-a: &web
+    image: ${IMAGE_WEB_A:-omnisync-stg:local}
     restart: unless-stopped
     env_file: ${STACK_ENV_DIR:-/etc/odoosync/stack}/omnisync.env
     # the committed gunicorn config (gthread); migrate first, as in the Ansible stack
@@ -22,6 +25,10 @@ services:
       timeout: 5s
       retries: 6
       start_period: 90s
+  web-b:
+    <<: *web
+    image: ${IMAGE_WEB_B:-omnisync-stg:local}
+    ports: ["127.0.0.1:8002:8000"]
   worker:
     image: ${IMAGE_WORKER:-omnisync-stg:local}
     restart: unless-stopped

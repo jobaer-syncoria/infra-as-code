@@ -163,6 +163,10 @@ cmd_request() {
 
   printf 'request_ok service=%s digest=%s ref=%s env=%s\n' "$service" "$digest" "$ref" "$deploy_env"
   if [ "$check_only" -eq 1 ]; then exit 0; fi
+  # a service with a blue/green layout in the signed policy is switched without dropping requests; the others are recreated
+  if jq -e --arg s "$service" '(.bluegreen // {})[$s]' "$policy" >/dev/null 2>&1; then
+    apply_bluegreen "$service" "$repo" "$digest" "$ref" "$rel" "$deploy_env" "$policy" "$env_file"
+  fi
   apply_recreate "$service" "$repo" "$digest" "$ref" "$rel" "$deploy_env" "$policy" "$env_file"
 }
 
@@ -282,6 +286,154 @@ apply_recreate() {
   fi
   printf 'deploy_failed service=%s no_previous_release\n' "$service" >&2
   exit 4
+}
+
+# ======================================================================================================== blue/green (ADR-08 3.9)
+# Policy layout (signed, root-owned):  "bluegreen": {"web": {"colours": {"a": {"service": "web-a", "port": 8000},
+#   "b": {"service": "web-b", "port": 8002}}, "include": "/srv/odoosync/state/upstream-web.conf", "edge_service": "edge",
+#   "quiet_cap": 300, "probe_timeout": 120}}
+# The include file holds one line, `server 127.0.0.1:<port>;`, which the edge nginx includes inside the group's upstream block.
+# Steps: migrate with the new image -> start the idle colour -> readiness (health, release, DB check) -> relink the include ->
+# nginx -t and reload in edge -> quiet check on the old colour -> stop it with the grace period read from `compose config`.
+bg() { jq -r --arg s "$BG_SVC" "(.bluegreen[\$s]) | $1" "$BG_POLICY"; }
+
+bg_cid() { dc ps -q "$1" 2>/dev/null | head -n1; }
+
+bg_running() {  # true when the colour service has a running container
+  local c; c="$(bg_cid "$1")"; [ -n "$c" ] && docker inspect --format '{{.State.Running}}' "$c" 2>/dev/null | grep -qx true
+}
+
+bg_stop_grace() {  # the stop_grace_period of a service, in seconds, from `compose config` (never a literal; compose prints 4m30s)
+  local raw secs
+  raw="$(dc config --format json 2>/dev/null | jq -r --arg s "$1" '.services[$s].stop_grace_period // empty' 2>/dev/null)"
+  [ -n "$raw" ] || return 1
+  secs="$(printf '%s' "$raw" | awk '{ r=$0; s=0
+    if (match(r, /[0-9]+h/)) s += substr(r, RSTART, RLENGTH-1) * 3600
+    if (match(r, /[0-9]+m/)) s += substr(r, RSTART, RLENGTH-1) * 60
+    if (match(r, /[0-9]+s/)) s += substr(r, RSTART, RLENGTH-1)
+    else if (r ~ /^[0-9]+$/) s = r
+    print s }')"
+  [ "${secs:-0}" -gt 0 ] || return 1
+  printf '%s' "$secs"
+}
+
+bg_stop_idle() {  # stop a new colour that did not become ready: the compose grace period too, or a fixed fallback when compose has none
+  local g; g="$(bg_stop_grace "$1")" || g=30
+  dc stop -t "$g" "$1" >/dev/null 2>&1 || true
+}
+
+bg_ready() {  # bg_ready <colour service> <port> <expected release> <deadline seconds>
+  local svc="$1" port="$2" want="$3" tmax="$4" waited=0 body got cid
+  while [ "$waited" -le "$tmax" ]; do
+    cid="$(bg_cid "$svc")"
+    if [ -n "$cid" ]; then
+      body="$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/_health" 2>/dev/null || true)"
+      got="$(printf '%s' "$body" | jq -r 'select(.status=="ok") | .release // empty' 2>/dev/null || true)"
+      if [ -n "$got" ] && [ "$got" = "$want" ]; then
+        # one database round trip from inside the new colour
+        docker exec "$cid" python manage.py check --database default >/dev/null 2>&1 && return 0
+      fi
+    fi
+    sleep "$BG_POLL"; waited=$(( waited + BG_POLL )); [ "$BG_POLL" -gt 0 ] || waited=$(( waited + 1 ))
+  done
+  return 1
+}
+
+bg_established() {  # established TCP connections to the colour's own listening port, read from inside its container
+  local cid="$1" cport="$2"
+  docker exec "$cid" python -c '
+import sys
+p = int(sys.argv[1]); n = 0
+for f in ("/proc/net/tcp", "/proc/net/tcp6"):
+    try:
+        rows = open(f).read().splitlines()[1:]
+    except OSError:
+        continue
+    for r in rows:
+        c = r.split()
+        if int(c[1].split(":")[1], 16) == p and c[3] == "01":
+            n += 1
+print(n)' "$cport" 2>/dev/null | tr -d '[:space:]'
+}
+
+apply_bluegreen() {
+  local service="$1" repo="$2" digest="$3" ref="$4" rel="$5" env="$6" policy="$7" env_file="$8"
+  OS_REL="$rel"; OS_ENV_FILE="$env_file"
+  OS_PROJECT="$(sed -n 's/^OMNISYNC_COMPOSE_PROJECT=//p' "$env_file" | head -n1)"; OS_PROJECT="${OS_PROJECT:-omnisync}"
+  BG_SVC="$service"; BG_POLICY="$policy"; BG_POLL="$(jq -r '.poll_seconds // 2' "$policy")"
+  mkdir -p "$OS_STATE"
+  need curl
+  exec 9>"$OS_STATE/deploy.lock"
+  flock -n 9 || refuse busy
+
+  local include edge_svc cap ptmo active idle a_svc b_svc a_port b_port act_svc act_port idle_svc idle_port want cport idle_up
+  include="$(bg '.include // empty')"; include="${include:-$OS_STATE/upstream-$service.conf}"
+  edge_svc="$(bg '.edge_service // "edge"')"; cap="$(bg '.quiet_cap // 300')"; ptmo="$(bg '.probe_timeout // 120')"
+  a_svc="$(bg '.colours.a.service')"; a_port="$(bg '.colours.a.port')"; b_svc="$(bg '.colours.b.service')"; b_port="$(bg '.colours.b.port')"
+  cport="$(bg '.container_port // 8000')"
+  [[ "$a_port" =~ ^[0-9]+$ && "$b_port" =~ ^[0-9]+$ && "$cport" =~ ^[0-9]+$ ]] || refuse bluegreen_layout ports
+  if [ -z "$a_svc" ] || [ -z "$b_svc" ]; then refuse bluegreen_layout services; fi
+
+  # which colour is live: the state file, else whichever container is running, else none (first start)
+  active="$(cat "$OS_STATE/$service.active" 2>/dev/null || true)"
+  if [ "$active" != a ] && [ "$active" != b ]; then
+    active=""
+    if bg_running "$a_svc"; then active=a; elif bg_running "$b_svc"; then active=b; fi
+  fi
+  if [ "$active" = a ]; then idle=b; else idle=a; fi
+  if [ "$idle" = a ]; then idle_svc="$a_svc"; idle_port="$a_port"; act_svc="$b_svc"; act_port="$b_port"
+  else idle_svc="$b_svc"; idle_port="$b_port"; act_svc="$a_svc"; act_port="$a_port"; fi
+  # what the edge's upstream block points at: a colour's own `upstream` (a name on the compose network) or its loopback port
+  idle_up="$(bg ".colours.$idle.upstream // \"127.0.0.1:$idle_port\"")"
+  [[ "$idle_up" =~ ^[A-Za-z0-9.:_-]+$ ]] || refuse bluegreen_layout upstream
+
+  docker pull "${repo}@${digest}" >/dev/null 2>&1 || refuse pull_failed "$repo"
+  want="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "${repo}@${digest}" 2>/dev/null || true)"
+  if [ -z "$want" ] || [ "$want" = "<no value>" ]; then refuse no_revision_label "$repo"; fi
+
+  # 1. migrate with the NEW image (idempotent), before anything is switched
+  set_image "$idle_svc" "${repo}@${digest}"
+  if ! dc run --rm --no-deps "$idle_svc" python manage.py migrate --noinput >/dev/null 2>&1; then
+    record_release "$service" "$repo" "$digest" "$ref" failed
+    printf 'deploy_failed service=%s step=migrate nothing_switched\n' "$service" >&2; exit 4
+  fi
+
+  # 2-3. start the idle colour and wait until it is ready
+  if ! dc up -d --no-deps --force-recreate "$idle_svc" >/dev/null 2>&1 || ! bg_ready "$idle_svc" "$idle_port" "$want" "$ptmo"; then
+    bg_stop_idle "$idle_svc"
+    record_release "$service" "$repo" "$digest" "$ref" failed
+    printf 'deploy_failed service=%s step=readiness nothing_switched\n' "$service" >&2; exit 4
+  fi
+
+  # 4-5. relink the upstream include to the new colour and reload nginx in edge; put it back if nginx refuses
+  local old_inc="" tmp edge_cid
+  [ -f "$include" ] && old_inc="$(cat "$include")"
+  edge_cid="$(bg_cid "$edge_svc")"
+  [ -n "$edge_cid" ] || { bg_stop_idle "$idle_svc"; refuse no_edge "$edge_svc"; }
+  tmp="$(mktemp "$include.XXXXXX")"; chmod 644 "$tmp"; printf 'server %s;\n' "$idle_up" > "$tmp"; mv -f -- "$tmp" "$include"
+  if ! { docker exec "$edge_cid" nginx -t >/dev/null 2>&1 && docker exec "$edge_cid" nginx -s reload >/dev/null 2>&1; }; then
+    if [ -n "$old_inc" ]; then printf '%s\n' "$old_inc" > "$include"; docker exec "$edge_cid" nginx -s reload >/dev/null 2>&1 || true; else rm -f "$include"; fi
+    bg_stop_idle "$idle_svc"
+    record_release "$service" "$repo" "$digest" "$ref" failed
+    printf 'deploy_failed service=%s step=nginx include_restored\n' "$service" >&2; exit 4
+  fi
+  printf '%s\n' "$idle" > "$OS_STATE/$service.active"
+
+  # 6-7. let the old colour finish what it holds, then stop it with the compose stop_grace_period
+  if [ -n "$active" ]; then
+    local waited=0
+    local act_cid; act_cid="$(bg_cid "$act_svc")"
+    while [ "$(bg_established "$act_cid" "$cport")" -gt 0 ] && [ "$waited" -lt "$cap" ]; do
+      sleep "$BG_POLL"; waited=$(( waited + BG_POLL )); [ "$BG_POLL" -gt 0 ] || waited=$(( waited + 1 ))
+    done
+    [ "$(bg_established "$act_cid" "$cport")" -eq 0 ] || logger -t odoosync-deploy -- "bluegreen quiet_cap_reached $service port=$act_port" 2>/dev/null || true
+    local grace
+    grace="$(bg_stop_grace "$act_svc")" || { record_release "$service" "$repo" "$digest" "$ref" ok_old_colour_running; refuse no_stop_grace "$act_svc"; }
+    dc stop -t "$grace" "$act_svc" >/dev/null 2>&1 || true
+  fi
+  record_release "$service" "$repo" "$digest" "$ref" ok
+  printf 'applied service=%s digest=%s ref=%s colour=%s\n' "$service" "$digest" "$ref" "$idle"
+  exit 0
 }
 
 cmd_rollback() {
